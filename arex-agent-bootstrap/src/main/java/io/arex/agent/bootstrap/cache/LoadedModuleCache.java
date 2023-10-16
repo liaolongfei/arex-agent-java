@@ -1,46 +1,19 @@
 package io.arex.agent.bootstrap.cache;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class LoadedModuleCache {
-    private static final Set<String> modules = new HashSet<>(50);
+    private static final Map<String, String> PACKAGE_CACHE = new ConcurrentHashMap<>();
 
-    /**
-     * Execute the corresponding instrumenter according to the package version that the application depends on
-     *
-     * @return instrumenter can be executed or not (any module matches would return true)
-     */
-    public static boolean hasResource(List<String> packages) {
-        if (packages == null || packages.size() == 0 || modules.size() == 0) {
-            return true;
+    public static void registerProjectModule(String moduleName, String version) {
+        if (moduleName == null || version == null) {
+            return;
         }
-
-        for (String module : packages) {
-            if (modules.contains(module)) {
-                return true;
-            }
-        }
-        return false;
+        PACKAGE_CACHE.put(moduleName, version);
     }
 
-    /**
-     * Register a package that allows instrumentation
-     *
-     * @param packageName package name in manifest file, with key: Bundle-Name or Automatic-Module-Name
-     * @param version package version in manifest file, with key: Bundle-Version or Implementation-Version
-     */
-    public static void registerResource(String packageName, String version) {
-        modules.add(toModule(packageName, version));
-    }
-
-    public static String toModule(String packageName, String version) {
-        if (packageName == null || version == null) {
-            return "";
-        }
-
-        int index = version.indexOf('.');
-        return packageName + "-" + (index < 0 ? version : version.substring(0, index));
+    public static String get(String moduleName) {
+        return PACKAGE_CACHE.get(moduleName);
     }
 }

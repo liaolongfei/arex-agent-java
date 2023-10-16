@@ -1,36 +1,33 @@
 package io.arex.inst.httpclient.apache.common;
 
+import io.arex.agent.bootstrap.util.IOUtils;
+import io.arex.agent.bootstrap.util.StringUtil;
 import io.arex.inst.httpclient.common.HttpClientAdapter;
 import io.arex.inst.httpclient.common.HttpResponseWrapper;
 import io.arex.inst.httpclient.common.HttpResponseWrapper.StringTuple;
+import io.arex.inst.runtime.log.LogManager;
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
+import org.apache.http.HttpEntityEnclosingRequest;
 import org.apache.http.HttpRequest;
 import org.apache.http.HttpResponse;
-import org.apache.http.client.methods.HttpEntityEnclosingRequestBase;
-import org.apache.http.client.methods.HttpRequestBase;
+import org.apache.http.StatusLine;
+import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.entity.BasicHttpEntity;
-import org.apache.http.entity.ByteArrayEntity;
 import org.apache.http.entity.HttpEntityWrapper;
-import org.apache.http.impl.DefaultHttpResponseFactory;
-import org.apache.http.util.EntityUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 public class ApacheHttpClientAdapter implements HttpClientAdapter<HttpRequest, HttpResponse> {
-    private static final Logger LOGGER = LoggerFactory.getLogger(ApacheHttpClientAdapter.class);
-    private final HttpRequestBase httpRequest;
+    private final HttpUriRequest httpRequest;
 
     public ApacheHttpClientAdapter(HttpRequest httpRequest) {
-        this.httpRequest = (HttpRequestBase) httpRequest;
+        this.httpRequest = (HttpUriRequest) httpRequest;
+        wrapHttpEntity(httpRequest);
     }
 
     @Override
@@ -40,21 +37,23 @@ public class ApacheHttpClientAdapter implements HttpClientAdapter<HttpRequest, H
 
     @Override
     public byte[] getRequestBytes() {
-        if (!(this.httpRequest instanceof HttpEntityEnclosingRequestBase)) {
-            return null;
+        HttpEntityEnclosingRequest enclosingRequest = enclosingRequest(httpRequest);
+        if (enclosingRequest == null) {
+            return ZERO_BYTE;
         }
-        HttpEntityEnclosingRequestBase httpEntityEnclosingRequestBase;
-        httpEntityEnclosingRequestBase = (HttpEntityEnclosingRequestBase) this.httpRequest;
-        HttpEntity entity = httpEntityEnclosingRequestBase.getEntity();
-        byte[] content;
+        HttpEntity entity = enclosingRequest.getEntity();
+        if (entity == null) {
+            return ZERO_BYTE;
+        }
+        if (entity instanceof CachedHttpEntityWrapper) {
+            return ((CachedHttpEntityWrapper) entity).getCachedBody();
+        }
         try {
-            content = EntityUtils.toByteArray(entity);
-        } catch (IOException e) {
-            LOGGER.warn("extract request content error:{}", e.getMessage(), e);
-            return null;
+            return IOUtils.copyToByteArray(entity.getContent());
+        } catch (Exception e) {
+            LogManager.warn("copyToByteArray", "getRequestBytes error, uri: " + getUri(), e);
+            return ZERO_BYTE;
         }
-        httpEntityEnclosingRequestBase.setEntity(new ByteArrayEntity(content));
-        return content;
     }
 
     @Override
@@ -81,40 +80,45 @@ public class ApacheHttpClientAdapter implements HttpClientAdapter<HttpRequest, H
             return null;
         }
 
-        byte[] content;
-        try (InputStream stream = httpEntity.getContent()) {
-            content = ApacheHttpClientHelper.readInputStream(stream);
-        } catch (Exception ex) {
-            LOGGER.warn("read content error:{}", ex.getMessage(), ex);
+        byte[] responseBody;
+        try {
+            responseBody = IOUtils.copyToByteArray(httpEntity.getContent());
+        } catch (Exception e) {
+            LogManager.warn("copyToByteArray", "getResponseBody error, uri: " + getUri(), e);
             return null;
         }
 
         if (httpEntity instanceof BasicHttpEntity) {
-            ((BasicHttpEntity) httpEntity).setContent(new ByteArrayInputStream(content));
+            ((BasicHttpEntity) httpEntity).setContent(new ByteArrayInputStream(responseBody));
             response.setEntity(httpEntity);
         } else if (httpEntity instanceof HttpEntityWrapper) {
+            // Output response normally now, later need to check revert DecompressingEntity
             BasicHttpEntity entity = ApacheHttpClientHelper.createHttpEntity(response);
-            entity.setContent(new ByteArrayInputStream(content));
+            entity.setContent(new ByteArrayInputStream(responseBody));
             response.setEntity(entity);
         }
 
         Locale locale = response.getLocale();
         List<HttpResponseWrapper.StringTuple> headers = new ArrayList<>();
         for (Header header : response.getAllHeaders()) {
+            if (StringUtil.isEmpty(header.getName())) {
+                continue;
+            }
             headers.add(new HttpResponseWrapper.StringTuple(header.getName(), header.getValue()));
         }
 
-        return new HttpResponseWrapper(response.getStatusLine().toString(), content,
-                new HttpResponseWrapper.StringTuple(locale.getLanguage(), locale.getCountry()),
-                headers, null);
+        return new HttpResponseWrapper(response.getStatusLine().toString(), responseBody,
+            new HttpResponseWrapper.StringTuple(locale.getLanguage(), locale.getCountry()),
+            headers);
     }
 
     @Override
     public HttpResponse unwrap(HttpResponseWrapper wrapped) {
-        HttpResponse response = DefaultHttpResponseFactory.INSTANCE.newHttpResponse(
-                ApacheHttpClientHelper.parseStatusLine(wrapped.getStatusLine()), null);
+        StatusLine statusLine = ApacheHttpClientHelper.parseStatusLine(wrapped.getStatusLine());
+        HttpResponse response = new CloseableHttpResponseProxy(statusLine);
         response.setLocale(new Locale(wrapped.getLocale().name(), wrapped.getLocale().value()));
         appendHeaders(response, wrapped.getHeaders());
+        // Output response normally now, later need to check revert DecompressingEntity
         BasicHttpEntity entity = ApacheHttpClientHelper.createHttpEntity(response);
         entity.setContent(new ByteArrayInputStream(wrapped.getContent()));
         entity.setContentLength(wrapped.getContent().length);
@@ -142,4 +146,26 @@ public class ApacheHttpClientAdapter implements HttpClientAdapter<HttpRequest, H
         return userAgent != null && userAgent.contains("arex");
     }
 
+    private void wrapHttpEntity(HttpRequest httpRequest) {
+        HttpEntityEnclosingRequest enclosingRequest = enclosingRequest(httpRequest);
+        if (enclosingRequest == null) {
+            return;
+        }
+        HttpEntity entity = enclosingRequest.getEntity();
+        if (entity == null || entity.isRepeatable()) {
+            return;
+        }
+        try {
+            enclosingRequest.setEntity(new CachedHttpEntityWrapper(entity));
+        } catch (Exception ignore) {
+            // ignore exception
+        }
+    }
+
+    private HttpEntityEnclosingRequest enclosingRequest(HttpRequest httpRequest) {
+        if (httpRequest instanceof HttpEntityEnclosingRequest) {
+            return (HttpEntityEnclosingRequest) httpRequest;
+        }
+        return null;
+    }
 }

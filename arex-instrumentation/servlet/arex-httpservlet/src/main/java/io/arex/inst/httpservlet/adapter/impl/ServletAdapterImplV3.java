@@ -1,5 +1,7 @@
 package io.arex.inst.httpservlet.adapter.impl;
 
+import io.arex.agent.bootstrap.util.IOUtils;
+import io.arex.agent.bootstrap.util.StringUtil;
 import io.arex.inst.httpservlet.adapter.ServletAdapter;
 import io.arex.inst.httpservlet.wrapper.CachedBodyRequestWrapperV3;
 import io.arex.inst.httpservlet.wrapper.CachedBodyResponseWrapperV3;
@@ -10,6 +12,7 @@ import javax.annotation.Nullable;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Enumeration;
 
@@ -25,24 +28,6 @@ public class ServletAdapterImplV3 implements ServletAdapter<HttpServletRequest, 
 
     @Nullable
     @Override
-    public HttpServletRequest asHttpServletRequest(Object servletRequest) {
-        if (servletRequest instanceof HttpServletRequest) {
-            return (HttpServletRequest) servletRequest;
-        }
-        return null;
-    }
-
-    @Nullable
-    @Override
-    public HttpServletResponse asHttpServletResponse(Object servletResponse) {
-        if (servletResponse instanceof HttpServletResponse) {
-            return (HttpServletResponse) servletResponse;
-        }
-        return null;
-    }
-
-    @Nullable
-    @Override
     public HttpServletRequest getNativeRequest(NativeWebRequest nativeWebRequest) {
         return nativeWebRequest.getNativeRequest(HttpServletRequest.class);
     }
@@ -54,11 +39,17 @@ public class ServletAdapterImplV3 implements ServletAdapter<HttpServletRequest, 
 
     @Override
     public HttpServletRequest wrapRequest(HttpServletRequest httpServletRequest) {
+        if (httpServletRequest instanceof CachedBodyRequestWrapperV3) {
+            return httpServletRequest;
+        }
         return new CachedBodyRequestWrapperV3(httpServletRequest);
     }
 
     @Override
     public HttpServletResponse wrapResponse(HttpServletResponse httpServletResponse) {
+        if (httpServletResponse instanceof CachedBodyResponseWrapperV3) {
+            return httpServletResponse;
+        }
         return new CachedBodyResponseWrapperV3(httpServletResponse);
     }
 
@@ -100,7 +91,9 @@ public class ServletAdapterImplV3 implements ServletAdapter<HttpServletRequest, 
 
     @Override
     public void copyBodyToResponse(HttpServletResponse httpServletResponse) throws IOException {
-        ((CachedBodyResponseWrapperV3) httpServletResponse).copyBodyToResponse();
+        if (httpServletResponse instanceof CachedBodyResponseWrapperV3) {
+            ((CachedBodyResponseWrapperV3) httpServletResponse).copyBodyToResponse();
+        }
     }
 
     @Override
@@ -116,8 +109,39 @@ public class ServletAdapterImplV3 implements ServletAdapter<HttpServletRequest, 
     }
 
     @Override
-    public String getServletPath(HttpServletRequest httpServletRequest) {
-        return httpServletRequest.getServletPath();
+    public String getFullUrl(HttpServletRequest httpServletRequest) {
+        String queryString = httpServletRequest.getQueryString();
+
+        if (StringUtil.isEmpty(queryString)) {
+            return httpServletRequest.getRequestURL().toString();
+        } else {
+            return new StringBuilder(httpServletRequest.getRequestURL()).append('?').append(queryString).toString();
+        }
+    }
+
+    @Override
+    public String getRequestPath(HttpServletRequest httpServletRequest) {
+        String queryString = httpServletRequest.getQueryString();
+
+        if (StringUtil.isEmpty(queryString)) {
+            return httpServletRequest.getRequestURI();
+        } else {
+            return new StringBuilder(httpServletRequest.getRequestURI()).append('?').append(queryString).toString();
+        }
+    }
+
+    @Override
+    public String getRequestURI(HttpServletRequest httpServletRequest) {
+        return httpServletRequest.getRequestURI();
+    }
+
+    @Override
+    public String getPattern(HttpServletRequest httpServletRequest) {
+        Object pattern = httpServletRequest.getAttribute("org.springframework.web.servlet.HandlerMapping.bestMatchingPattern");
+        if (pattern != null) {
+            return String.valueOf(pattern);
+        }
+        return httpServletRequest.getRequestURI();
     }
 
     @Override
@@ -141,17 +165,63 @@ public class ServletAdapterImplV3 implements ServletAdapter<HttpServletRequest, 
     }
 
     @Override
-    public String getQueryString(HttpServletRequest httpServletRequest) {
-        return httpServletRequest.getQueryString();
-    }
-
-    @Override
     public byte[] getRequestBytes(HttpServletRequest httpServletRequest) {
-        return ((CachedBodyRequestWrapperV3) httpServletRequest).getContentAsByteArray();
+        CachedBodyRequestWrapperV3 requestWrapper = (CachedBodyRequestWrapperV3) httpServletRequest;
+        byte[] content =  requestWrapper.getContentAsByteArray();
+        if (content.length > 0) {
+            return content;
+        }
+        // read request body to cache
+        if (httpServletRequest.getContentLength() > 0) {
+            try {
+                return IOUtils.copyToByteArray(requestWrapper.getInputStream());
+            } catch (Exception ignore) {
+                // ignore exception
+            }
+        }
+        return content;
     }
 
     @Override
     public byte[] getResponseBytes(HttpServletResponse httpServletResponse) {
         return ((CachedBodyResponseWrapperV3) httpServletResponse).getContentAsByteArray();
+    }
+
+    @Override
+    public HttpServletRequest asHttpServletRequest(Object servletRequest) {
+        if (servletRequest instanceof HttpServletRequest) {
+            HttpServletRequest httpServletRequest = (HttpServletRequest) servletRequest;
+            try {
+                if (httpServletRequest.getCharacterEncoding() == null) {
+                    httpServletRequest.setCharacterEncoding(StandardCharsets.UTF_8.name());
+                }
+            } catch (Exception e) {
+                // ignore
+            }
+            return httpServletRequest;
+        }
+        return null;
+    }
+
+    @Override
+    public HttpServletResponse asHttpServletResponse(Object servletResponse) {
+        if (servletResponse instanceof HttpServletResponse) {
+            return (HttpServletResponse) servletResponse;
+        }
+        return null;
+    }
+
+    @Override
+    public boolean markProcessed(HttpServletRequest httpServletRequest, String mark) {
+        if (httpServletRequest.getAttribute(mark) != null) {
+            return true;
+        }
+        httpServletRequest.setAttribute(mark, Boolean.TRUE);
+        return false;
+    }
+
+    @Override
+    public String getParameter(HttpServletRequest servletRequest, String name) {
+        return servletRequest.getParameter(name);
     }
 }

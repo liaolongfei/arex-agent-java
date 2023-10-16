@@ -1,6 +1,7 @@
 package io.arex.inst.httpclient.okhttp.v3;
 
 
+import io.arex.agent.bootstrap.util.StringUtil;
 import io.arex.inst.httpclient.common.HttpClientAdapter;
 import io.arex.inst.httpclient.common.HttpResponseWrapper;
 import io.arex.inst.httpclient.common.HttpResponseWrapper.StringTuple;
@@ -13,12 +14,10 @@ import okhttp3.Response.Builder;
 import okhttp3.ResponseBody;
 import okhttp3.internal.http.StatusLine;
 import okio.Buffer;
-import org.apache.commons.lang3.StringUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 
@@ -61,14 +60,16 @@ public class OkHttpClientAdapter implements HttpClientAdapter<Request, Response>
     @Override
     public HttpResponseWrapper wrap(Response response) {
         HttpResponseWrapper wrapper = new HttpResponseWrapper();
-        StatusLine statusLine = new StatusLine(response.protocol(), response.code(), response.message());
-        wrapper.setStatusLine(statusLine.toString());
         try {
             ResponseBody responseBody = response.peekBody(Long.MAX_VALUE);
             wrapper.setContent(responseBody.bytes());
-        } catch (IOException e) {
+        } catch (Throwable e) {
             LOGGER.warn("encode response error:{}", e.getMessage(), e);
+            return null;
         }
+        StatusLine statusLine = new StatusLine(response.protocol(), response.code(), response.message());
+        wrapper.setStatusLine(statusLine.toString());
+
         Headers headers = response.headers();
         wrapper.setHeaders(encodeHeaders(headers));
         return wrapper;
@@ -80,6 +81,9 @@ public class OkHttpClientAdapter implements HttpClientAdapter<Request, Response>
         }
         List<StringTuple> encodeHeaders = new ArrayList<>(headers.size());
         for (int i = 0; i < headers.size(); i++) {
+            if (StringUtil.isEmpty(headers.name(i))) {
+                continue;
+            }
             encodeHeaders.add(new StringTuple(headers.name(i), headers.value(i)));
         }
         return encodeHeaders;
@@ -95,23 +99,26 @@ public class OkHttpClientAdapter implements HttpClientAdapter<Request, Response>
         for (int i = 0; i < headers.size(); i++) {
             stringTuple = headers.get(i);
             headersBuilder.add(stringTuple.name(), stringTuple.value());
-            if (StringUtils.equalsIgnoreCase(stringTuple.name(), CONTENT_TYPE_NAME)) {
+
+            if (stringTuple.name().equalsIgnoreCase(CONTENT_TYPE_NAME)) {
                 contentType = stringTuple.value();
             }
         }
         ResponseBody responseBody = null;
         if (contentType != null) {
-            responseBody = ResponseBody.create(wrapped.getContent(), MediaType.get(contentType));
+            // compatible with version 3.x
+            responseBody = ResponseBody.create(MediaType.parse(contentType), wrapped.getContent());
         }
         responseBuilder.request(this.httpRequest);
         responseBuilder.body(responseBody);
         responseBuilder.headers(headersBuilder.build());
         try {
-            StatusLine statusLine = StatusLine.Companion.parse(wrapped.getStatusLine());
+            // compatible with version 3.x
+            StatusLine statusLine = StatusLineAdapter.parse(wrapped.getStatusLine());
             responseBuilder.code(statusLine.code);
             responseBuilder.message(statusLine.message);
             responseBuilder.protocol(statusLine.protocol);
-        } catch (IOException e) {
+        } catch (Throwable e) {
             LOGGER.warn("decode response StatusLine error:{}", e.getMessage(), e);
         }
         return responseBuilder.build();
@@ -121,15 +128,15 @@ public class OkHttpClientAdapter implements HttpClientAdapter<Request, Response>
     public byte[] getRequestBytes() {
         final RequestBody body = this.httpRequest.body();
         if (body == null) {
-            return null;
+            return ZERO_BYTE;
         }
         try {
             final Buffer buffer = new Buffer();
             body.writeTo(buffer);
             return buffer.readByteArray();
-        } catch (IOException e) {
+        } catch (Throwable e) {
             LOGGER.warn("copy request body to base64 error:{}", e.getMessage(), e);
         }
-        return null;
+        return ZERO_BYTE;
     }
 }

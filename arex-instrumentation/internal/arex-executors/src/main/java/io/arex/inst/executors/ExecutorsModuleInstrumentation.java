@@ -1,8 +1,8 @@
 package io.arex.inst.executors;
 
-import io.arex.foundation.api.ModuleInstrumentation;
-import io.arex.foundation.api.TypeInstrumentation;
 import com.google.auto.service.AutoService;
+import io.arex.inst.extension.ModuleInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
 
 import java.util.List;
 
@@ -12,13 +12,14 @@ import static java.util.Arrays.asList;
 @AutoService(ModuleInstrumentation.class)
 public class ExecutorsModuleInstrumentation extends ModuleInstrumentation {
     public ExecutorsModuleInstrumentation() {
-        super("internal-executors", null);
+        super("internal-executors");
     }
 
     @Override
     public List<TypeInstrumentation> instrumentationTypes() {
         return asList(new ThreadPoolInstrumentation(),
                 new ForkJoinTaskInstrumentation(),
-                new FutureTaskInstrumentation());
+                new FutureTaskInstrumentation(),
+                new ForkJoinTaskConstructorInstrumentation());
     }
 }

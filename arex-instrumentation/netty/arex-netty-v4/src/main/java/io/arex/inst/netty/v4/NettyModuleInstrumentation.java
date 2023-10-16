@@ -1,9 +1,10 @@
 package io.arex.inst.netty.v4;
 
 import com.google.auto.service.AutoService;
-import io.arex.foundation.api.ModuleDescription;
-import io.arex.foundation.api.ModuleInstrumentation;
-import io.arex.foundation.api.TypeInstrumentation;
+import io.arex.inst.extension.ModuleDescription;
+import io.arex.inst.extension.ModuleInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
+import io.arex.agent.bootstrap.model.ComparableVersion;
 
 import java.util.List;
 
@@ -14,12 +15,11 @@ public class NettyModuleInstrumentation extends ModuleInstrumentation {
 
     public NettyModuleInstrumentation() {
         super("netty-v4.1", ModuleDescription.builder()
-                .addPackage("io.netty.all", "4")
-                .build());
+                .name("io.netty.all").supportFrom(ComparableVersion.of("4.0")).build());
     }
 
     @Override
     public List<TypeInstrumentation> instrumentationTypes() {
-        return singletonList(new ChannelPipelineInstrumentation(target));
+        return singletonList(new ChannelPipelineInstrumentation());
     }
 }

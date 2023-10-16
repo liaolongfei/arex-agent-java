@@ -1,18 +1,20 @@
 package io.arex.inst.netty.v4.server;
 
-import io.arex.foundation.context.ContextManager;
-import io.arex.foundation.listener.CaseEvent;
-import io.arex.foundation.listener.CaseListenerImpl;
-import io.arex.foundation.model.AbstractMocker;
-import io.arex.foundation.model.Constants;
-import io.arex.foundation.model.ServiceEntranceMocker;
-import io.arex.foundation.util.StringUtil;
+import io.arex.agent.bootstrap.model.Mocker;
+import io.arex.agent.bootstrap.util.StringUtil;
+import io.arex.inst.runtime.context.ContextManager;
+import io.arex.inst.runtime.listener.CaseEvent;
+import io.arex.inst.runtime.listener.CaseEventDispatcher;
+import io.arex.inst.runtime.model.ArexConstants;
 import io.arex.inst.netty.v4.common.AttributeKey;
 import io.arex.inst.netty.v4.common.NettyHelper;
+import io.arex.inst.runtime.util.MockUtils;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.LastHttpContent;
+
+import java.util.Map;
 
 public class ResponseTracingHandler extends ChannelOutboundHandlerAdapter {
 
@@ -47,23 +49,24 @@ public class ResponseTracingHandler extends ChannelOutboundHandlerAdapter {
     }
 
     private void processHeaders(final Channel channel, final HttpResponse response) {
-        AbstractMocker mocker = channel.attr(AttributeKey.TRACING_MOCKER).get();
+        Mocker mocker = channel.attr(AttributeKey.TRACING_MOCKER).get();
         if (mocker == null) {
             return;
         }
-
-        ((ServiceEntranceMocker)mocker).setResponseHeaders(NettyHelper.parseHeaders(response.headers()));
+        Map<String, String> headers=NettyHelper.parseHeaders(response.headers());
+        mocker.getTargetResponse().setAttribute("Headers", headers);
         channel.attr(AttributeKey.TRACING_MOCKER).set(mocker);
         appendHeader(response);
     }
 
     private void appendHeader(HttpResponse response) {
         if (ContextManager.needRecord()) {
-            response.headers().set(Constants.RECORD_ID, ContextManager.currentContext().getCaseId());
+            response.headers().set(ArexConstants.RECORD_ID, ContextManager.currentContext().getCaseId());
+            return;
         }
 
         if (ContextManager.needReplay()) {
-            response.headers().set(Constants.REPLAY_ID, ContextManager.currentContext().getReplayId());
+            response.headers().set(ArexConstants.REPLAY_ID, ContextManager.currentContext().getReplayId());
         }
     }
 
@@ -72,17 +75,17 @@ public class ResponseTracingHandler extends ChannelOutboundHandlerAdapter {
             return;
         }
 
-        AbstractMocker mocker = channel.attr(AttributeKey.TRACING_MOCKER).getAndRemove();
+        Mocker mocker = channel.attr(AttributeKey.TRACING_MOCKER).getAndRemove();
         if (mocker == null) {
             return;
         }
-        mocker.setResponse(content);
+        mocker.getTargetResponse().setBody(content);
         if (ContextManager.needReplay()) {
-            mocker.replay();
+           MockUtils.replayBody(mocker);
         } else if (ContextManager.needRecord()) {
-            mocker.record();
+            MockUtils.recordMocker(mocker);
         }
 
-        CaseListenerImpl.INSTANCE.onEvent(new CaseEvent(this, CaseEvent.Action.DESTROY));
+        CaseEventDispatcher.onEvent(CaseEvent.ofExitEvent());
     }
 }

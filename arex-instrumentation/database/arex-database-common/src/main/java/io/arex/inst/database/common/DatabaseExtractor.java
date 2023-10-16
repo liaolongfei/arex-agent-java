@@ -1,80 +1,97 @@
 package io.arex.inst.database.common;
 
-import io.arex.foundation.model.DatabaseMocker;
-import io.arex.foundation.serializer.SerializeUtils;
-import io.arex.foundation.services.IgnoreService;
-import io.arex.foundation.util.StringUtil;
-import org.apache.ibatis.mapping.BoundSql;
-import org.hibernate.engine.spi.QueryParameters;
+import io.arex.agent.bootstrap.model.MockResult;
+import io.arex.agent.bootstrap.model.Mocker;
+import io.arex.agent.bootstrap.util.StringUtil;
+import io.arex.inst.runtime.serializer.Serializer;
 
-import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.SQLException;
+import io.arex.inst.runtime.util.IgnoreUtils;
+import io.arex.inst.runtime.util.MockUtils;
+import io.arex.inst.runtime.util.TypeUtil;
 
-import static io.arex.inst.database.common.DatabaseHelper.parseParameter;
 
 public class DatabaseExtractor {
+
+    private static final String[] SEARCH_LIST = new String[]{"\n", "\t"};
+
+    private static final String[] REPLACE_LIST = new String[]{"", ""};
 
     private final String sql;
     private final String parameters;
     private final String dbName;
+    private final String methodName;
+    private String keyHolder;
 
-    // hibernate
-    public DatabaseExtractor(String sql, Connection connection, Object entity) {
-        this(sql, connection, SerializeUtils.serialize(entity));
+    public String getKeyHolder() {
+        return keyHolder;
+    }
+
+    public void setKeyHolder(String keyHolder) {
+        this.keyHolder = keyHolder;
+    }
+
+    public String getSql() {
+        return sql;
     }
 
     // hibernate
-    public DatabaseExtractor(String sql, Connection connection, QueryParameters parameters) {
-        this(sql, connection, parseParameter(parameters));
+    public DatabaseExtractor(String sql, Object entity, String methodName) {
+        this(sql, Serializer.serialize(entity), methodName);
     }
 
-    // mybatis
-    public DatabaseExtractor(DataSource dataSource, BoundSql boundSql, Object parameters) {
-        this(boundSql.getSql(), DatabaseHelper.getUrlFromDataSource(dataSource), SerializeUtils.serialize(parameters));
-    }
-
-    // mybatis
-    public DatabaseExtractor(DataSource dataSource, BoundSql boundSql, String parameters) throws SQLException {
-        //this(boundSql.getSql(), DatabaseHelper.getUrlFromDataSource(dataSource), parameters);
-        this(boundSql.getSql(), dataSource.getConnection(), parameters);
-    }
-
-    public DatabaseExtractor(String sql, Connection connection, String parameters) {
-        this.sql = sql;
-        this.dbName = DatabaseHelper.getDbName(connection);
+    public DatabaseExtractor(String sql, String parameters, String methodName) {
+        this.dbName = "";
+        this.sql = StringUtil.replaceEach(sql, SEARCH_LIST, REPLACE_LIST, false, 0);
         this.parameters = parameters;
+        this.methodName = methodName;
     }
 
-    public DatabaseExtractor(String sql, String connectionUrl, String parameters) {
+    /**
+     * mongo
+     */
+    public DatabaseExtractor(String dbName, String sql, String parameters, String methodName) {
+        this.dbName = dbName;
         this.sql = sql;
-        this.dbName = DatabaseHelper.getDbName(connectionUrl, null);
         this.parameters = parameters;
-    }
-
-    public boolean isMockEnabled() {
-        // todo
-        return IgnoreService.isServiceEnabled(this.dbName);
+        this.methodName = methodName;
     }
 
     public void record(Object response) {
-        DatabaseMocker mocker = new DatabaseMocker(this.dbName, sql, parameters, response);
-        mocker.record();
+        record(response, null);
+    }
+    public void record(Object response, String serializer) {
+         MockUtils.recordMocker(makeMocker(response, serializer));
     }
 
-    public void record(SQLException ex) {
-        DatabaseMocker mocker = new DatabaseMocker(this.dbName, sql, parameters);
-        mocker.setExceptionMessage(ex.getMessage());
-        mocker.record();
+    public MockResult replay() {
+        return replay(null);
     }
 
-    public Object replay() throws SQLException {
-        DatabaseMocker mocker = new DatabaseMocker(this.dbName, sql, parameters);
-        Object value = mocker.replay();
-        if (StringUtil.isNotEmpty(mocker.getExceptionMessage())) {
-            throw new SQLException(mocker.getExceptionMessage());
+    public MockResult replay(String serializer) {
+        boolean ignoreMockResult = IgnoreUtils.ignoreMockResult(this.dbName, methodName);
+        Mocker replayMocker = MockUtils.replayMocker(makeMocker(null, serializer));
+        Object replayResult = null;
+        if (MockUtils.checkResponseMocker(replayMocker)) {
+            replayResult = Serializer.deserialize(replayMocker.getTargetResponse().getBody(),
+                    replayMocker.getTargetResponse().getType(), serializer);
+
+            if (replayResult != null) {
+                // restore keyHolder
+                setKeyHolder(replayMocker.getTargetResponse().attributeAsString("keyHolder"));
+            }
         }
-        return value;
+
+        return MockResult.success(ignoreMockResult, replayResult);
+    }
+
+    private Mocker makeMocker(Object response, String serializer) {
+        Mocker mocker = MockUtils.createDatabase(this.methodName);
+        mocker.getTargetRequest().setBody(this.sql);
+        mocker.getTargetRequest().setAttribute("dbName", this.dbName);
+        mocker.getTargetRequest().setAttribute("parameters", this.parameters);
+        mocker.getTargetResponse().setAttribute("keyHolder", this.keyHolder);
+        mocker.getTargetResponse().setBody(Serializer.serialize(response, serializer));
+        mocker.getTargetResponse().setType(TypeUtil.getName(response));
+        return mocker;
     }
 }
-

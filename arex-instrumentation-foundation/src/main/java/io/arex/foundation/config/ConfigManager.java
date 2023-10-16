@@ -1,43 +1,44 @@
 package io.arex.foundation.config;
 
 import com.google.common.annotations.VisibleForTesting;
-import io.arex.foundation.model.DynamicClassEntity;
-import io.arex.foundation.services.TimerService;
-import io.arex.foundation.util.PropertyUtil;
-import io.arex.foundation.util.StringUtil;
-import org.apache.commons.lang3.BooleanUtils;
-import org.apache.commons.lang3.StringUtils;
+import io.arex.agent.bootstrap.util.ArrayUtils;
+import io.arex.agent.bootstrap.util.MapUtils;
+import io.arex.agent.bootstrap.util.StringUtil;
+import io.arex.foundation.model.ConfigQueryResponse.DynamicClassConfiguration;
+import io.arex.foundation.model.ConfigQueryResponse.ResponseBody;
+import io.arex.foundation.model.ConfigQueryResponse.ServiceCollectConfig;
+import io.arex.agent.bootstrap.util.CollectionUtil;
+import io.arex.foundation.util.NetUtils;
+import io.arex.inst.runtime.config.Config;
+import io.arex.inst.runtime.config.ConfigBuilder;
+import io.arex.inst.runtime.config.listener.ConfigListener;
+import io.arex.inst.runtime.model.DynamicClassEntity;
+import io.arex.inst.runtime.model.DynamicClassStatusEnum;
+import io.arex.agent.bootstrap.util.ServiceLoader;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.time.DayOfWeek;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
+import static io.arex.agent.bootstrap.constants.ConfigConstants.*;
+
 public class ConfigManager {
+
     private static final Logger LOGGER = LoggerFactory.getLogger(ConfigManager.class);
     public static final ConfigManager INSTANCE = new ConfigManager();
-
-    private static final String ENABLE_DEBUG = "arex.enable.debug";
-    private static final String SERVICE_NAME = "arex.service.name";
-    private static final String STORAGE_SERVICE_HOST = "arex.storage.service.host";
-    private static final String CONFIG_SERVICE_HOST = "arex.config.service.host";
-    private static final String CONFIG_PATH = "arex.config.path";
-    private static final String STORAGE_MODE = "local";
-    private static final String RECORD_RATE = "arex.rate.limit";
-    private static final String DYNAMIC_CLASS_KEY = "arex.dynamic.class";
-    private static final String DYNAMIC_RESULT_SIZE_LIMIT = "arex.dynamic.result.size.limit";
-    private static final String TIME_MACHINE = "arex.time.machine";
-    private static final String STORAGE_SERVICE_MODE = "arex.storage.mode";
-    private static final String STORAGE_SERVICE_JDBC_URL = "arex.storage.jdbc.url";
-    private static final String STORAGE_SERVICE_USER_NAME = "arex.storage.username";
-    private static final String STORAGE_SERVICE_PASSWORD = "arex.storage.password";
-    private static final String STORAGE_SERVICE_WEB_PORT = "arex.storage.web.port";
-    private static final String SERVER_SERVICE_TCP_PORT = "arex.server.tcp.port";
-
+    public static final AtomicBoolean FIRST_TRANSFORM = new AtomicBoolean(false);
+    private static final int DEFAULT_RECORDING_RATE = 1;
     private boolean enableDebug;
     private String agentVersion;
     private String serviceName;
@@ -46,25 +47,33 @@ public class ConfigManager {
     private String configPath;
 
     private String storageServiceMode;
-    private String storageServiceJdbcUrl;
-    private String storageServiceUsername;
-    private String storageServicePassword;
-    private String storageServiceWebPort;
-    private String serverServiceTcpPort;
     private int recordRate;
-    private String dynamicClass;
     private int dynamicResultSizeLimit;
-    private List<DynamicClassEntity> dynamicClassList;
+    private final List<DynamicClassEntity> dynamicClassList = new ArrayList<>();
     /**
      * use only replay
      */
     private boolean startTimeMachine;
-
-    private static List<ConfigListener> listeners = new ArrayList<ConfigListener>();
+    private EnumSet<DayOfWeek> allowDayOfWeeks;
+    private LocalTime allowTimeOfDayFrom;
+    private LocalTime allowTimeOfDayTo;
+    private List<String> disabledModules;
+    private List<String> retransformModules;
+    private Set<String> excludeServiceOperations;
+    private String targetAddress;
+    private int dubboStreamReplayThreshold;
+    private List<ConfigListener> listeners = new ArrayList<>();
+    private Map<String, String> extendField;
 
     private ConfigManager() {
         init();
+        initConfigListener();
         readConfigFromFile(configPath);
+        updateRuntimeConfig();
+    }
+
+    private void initConfigListener() {
+        listeners = ServiceLoader.load(ConfigListener.class);
     }
 
     public boolean isEnableDebug() {
@@ -110,7 +119,10 @@ public class ConfigManager {
     }
 
     public String getConfigServiceHost() {
-        return configServiceHost;
+        if (StringUtil.isNotEmpty(configServiceHost)) {
+            return configServiceHost;
+        }
+        return storageServiceHost;
     }
 
     public void setConfigServiceHost(String configServiceHost) {
@@ -121,66 +133,131 @@ public class ConfigManager {
         System.setProperty(CONFIG_SERVICE_HOST, configServiceHost);
     }
 
-    public void setRecordRate(String recordRate) {
-        if (StringUtil.isEmpty(recordRate)) {
+    public void setRecordRate(int recordRate) {
+        if (recordRate < 0) {
             return;
         }
-        this.recordRate = Integer.parseInt(recordRate);
-        System.setProperty(RECORD_RATE, recordRate);
+        this.recordRate = recordRate;
+        System.setProperty(RECORD_RATE, String.valueOf(recordRate));
     }
 
-    public void setDynamicResultSizeLimit(String dynamicResultSizeLimit) {
-        if (StringUtil.isEmpty(dynamicResultSizeLimit)) {
-            return;
-        }
-        this.dynamicResultSizeLimit = Integer.parseInt(dynamicResultSizeLimit);
-        System.setProperty(DYNAMIC_RESULT_SIZE_LIMIT, dynamicResultSizeLimit);
+    public int getRecordRate() {
+        return recordRate;
     }
 
     public void setTimeMachine(String timeMachine) {
         if (StringUtil.isEmpty(timeMachine)) {
             return;
         }
-        this.startTimeMachine = BooleanUtils.toBoolean(timeMachine);
+        this.startTimeMachine = Boolean.parseBoolean(timeMachine);
         System.setProperty(TIME_MACHINE, timeMachine);
+    }
+
+    public List<DynamicClassEntity> getDynamicClassList() {
+        return dynamicClassList;
+    }
+
+    public void setDynamicClassList(List<DynamicClassConfiguration> newDynamicConfigList) {
+        if (newDynamicConfigList == null) {
+            return;
+        }
+        // reset previously configured dynamic classes
+        if (newDynamicConfigList.isEmpty()) {
+            for (DynamicClassEntity item : dynamicClassList) {
+                item.setStatus(DynamicClassStatusEnum.RESET);
+            }
+            return;
+        }
+
+        List<DynamicClassEntity> newDynamicClassList = new ArrayList<>(newDynamicConfigList.size());
+        // keyFormula: java.lang.System.currentTimeMillis,java.util.UUID.randomUUID -> 2 dynamic classes will be created
+        for (DynamicClassConfiguration config : newDynamicConfigList) {
+            final String[] split = StringUtil.split(config.getKeyFormula(), ',');
+
+            if (ArrayUtils.isEmpty(split)) {
+                newDynamicClassList.add(createDynamicClass(config, config.getKeyFormula()));
+                continue;
+            }
+
+            for (String keyFormula : split) {
+                newDynamicClassList.add(createDynamicClass(config, keyFormula));
+            }
+        }
+
+        // if old dynamic class list is empty, add all new dynamic class list
+        if (dynamicClassList.isEmpty()) {
+            dynamicClassList.addAll(newDynamicClassList);
+            return;
+        }
+
+        // check if dynamic classes changed
+        if (dynamicClassList.size() == newDynamicClassList.size() && dynamicClassList.equals(newDynamicClassList)) {
+            return;
+        }
+
+        Set<String> resetClassSet = new HashSet<>();
+        List<DynamicClassEntity> unchangedList = new ArrayList<>();
+        for (DynamicClassEntity entity : dynamicClassList) {
+            if (newDynamicClassList.contains(entity)) {
+                entity.setStatus(DynamicClassStatusEnum.UNCHANGED);
+                unchangedList.add(entity);
+            } else {
+                entity.setStatus(DynamicClassStatusEnum.RESET);
+                resetClassSet.add(entity.getClazzName());
+            }
+        }
+        // reset unchanged dynamic classes status to retransform
+        for (DynamicClassEntity entity : unchangedList) {
+            if (resetClassSet.contains(entity.getClazzName())) {
+                entity.setStatus(DynamicClassStatusEnum.RETRANSFORM);
+            }
+        }
+        List<DynamicClassEntity> retransformList = new ArrayList<>();
+        for (DynamicClassEntity entity : newDynamicClassList) {
+            if (!dynamicClassList.contains(entity)) {
+                retransformList.add(entity);
+            }
+        }
+        dynamicClassList.addAll(retransformList);
+    }
+
+    private DynamicClassEntity createDynamicClass(DynamicClassConfiguration config, String keyFormula) {
+        DynamicClassEntity newItem = new DynamicClassEntity(config.getFullClassName(), config.getMethodName(),
+                config.getParameterTypes(), keyFormula);
+        newItem.setStatus(DynamicClassStatusEnum.RETRANSFORM);
+        return newItem;
     }
 
     @VisibleForTesting
     void init() {
-        agentVersion = "0.0.1";
-        enableDebug = Boolean.parseBoolean(System.getProperty(ENABLE_DEBUG));
-        serviceName = StringUtils.strip(System.getProperty(SERVICE_NAME));
-        storageServiceHost = StringUtils.strip(System.getProperty(STORAGE_SERVICE_HOST));
-        configServiceHost = StringUtils.strip(System.getProperty(CONFIG_SERVICE_HOST));
-        configPath = StringUtils.strip(System.getProperty(CONFIG_PATH));
-        recordRate = Integer.parseInt(System.getProperty(RECORD_RATE, "1"));
+        agentVersion = System.getProperty(AGENT_VERSION);
+        setEnableDebug(System.getProperty(ENABLE_DEBUG));
+        setServiceName(StringUtil.strip(System.getProperty(SERVICE_NAME)));
+        setStorageServiceHost(StringUtil.strip(System.getProperty(STORAGE_SERVICE_HOST)));
+        setConfigServiceHost(StringUtil.strip(System.getProperty(CONFIG_SERVICE_HOST)));
+        configPath = StringUtil.strip(System.getProperty(CONFIG_PATH));
+        setRecordRate(DEFAULT_RECORDING_RATE);
 
-        storageServiceMode = System.getProperty(STORAGE_SERVICE_MODE);
-        storageServiceJdbcUrl = System.getProperty(STORAGE_SERVICE_JDBC_URL, PropertyUtil.getProperty(STORAGE_SERVICE_JDBC_URL));
-        storageServiceUsername = System.getProperty(STORAGE_SERVICE_USER_NAME, PropertyUtil.getProperty(STORAGE_SERVICE_USER_NAME));
-        storageServicePassword = System.getProperty(STORAGE_SERVICE_PASSWORD, PropertyUtil.getProperty(STORAGE_SERVICE_PASSWORD));
-        storageServiceWebPort = System.getProperty(STORAGE_SERVICE_WEB_PORT, PropertyUtil.getProperty(STORAGE_SERVICE_WEB_PORT));
-        serverServiceTcpPort = System.getProperty(SERVER_SERVICE_TCP_PORT, PropertyUtil.getProperty(SERVER_SERVICE_TCP_PORT));
-
-        dynamicClass = System.getProperty(DYNAMIC_CLASS_KEY);
-        dynamicClassList = parseDynamicClassList(dynamicClass);
-        dynamicResultSizeLimit = Integer.parseInt(System.getProperty(DYNAMIC_RESULT_SIZE_LIMIT, "1000"));
-
-        startTimeMachine = BooleanUtils.toBoolean(System.getProperty(TIME_MACHINE, Boolean.FALSE.toString()));
-
-        TimerService.scheduleAtFixedRate(ConfigManager::update, 300, 300, TimeUnit.SECONDS);
+        setStorageServiceMode(System.getProperty(STORAGE_SERVICE_MODE));
+        setDynamicResultSizeLimit(System.getProperty(DYNAMIC_RESULT_SIZE_LIMIT, "1000"));
+        setTimeMachine(System.getProperty(TIME_MACHINE));
+        setAllowDayOfWeeks(Integer.parseInt(System.getProperty(ALLOW_DAY_WEEKS, "127")));
+        setAllowTimeOfDayFrom(System.getProperty(ALLOW_TIME_FROM, "00:01"));
+        setAllowTimeOfDayTo(System.getProperty(ALLOW_TIME_TO, "23:59"));
+        setDisabledModules(System.getProperty(DISABLE_MODULE));
+        setRetransformModules(System.getProperty(RETRANSFORM_MODULE));
+        setExcludeServiceOperations(System.getProperty(EXCLUDE_SERVICE_OPERATION));
+        setDubboStreamReplayThreshold(System.getProperty(DUBBO_STREAM_REPLAY_THRESHOLD, "100"));
     }
 
     @VisibleForTesting
     void readConfigFromFile(String configPath) {
         if (StringUtil.isEmpty(configPath)) {
-            LOGGER.info("arex agent config path is null");
             return;
         }
 
         Map<String, String> configMap = parseConfigFile(configPath);
-        if (configMap.size() == 0) {
-            LOGGER.info("arex agent config is empty");
+        if (configMap.isEmpty()) {
             return;
         }
 
@@ -188,10 +265,14 @@ public class ConfigManager {
         setServiceName(configMap.get(SERVICE_NAME));
         setStorageServiceHost(configMap.get(STORAGE_SERVICE_HOST));
         setConfigServiceHost(configMap.get(CONFIG_SERVICE_HOST));
-        setRecordRate(configMap.get(RECORD_RATE));
         setDynamicResultSizeLimit(configMap.get(DYNAMIC_RESULT_SIZE_LIMIT));
         setTimeMachine(configMap.get(TIME_MACHINE));
         setStorageServiceMode(configMap.get(STORAGE_SERVICE_MODE));
+        setDisabledModules(configMap.get(DISABLE_MODULE));
+        setRetransformModules(configMap.get(RETRANSFORM_MODULE));
+        setExcludeServiceOperations(configMap.get(EXCLUDE_SERVICE_OPERATION));
+        System.setProperty(DISABLE_REPLAY, StringUtil.defaultString(configMap.get(DISABLE_REPLAY)));
+        System.setProperty(DISABLE_RECORD, StringUtil.defaultString(configMap.get(DISABLE_RECORD)));
     }
 
     private static Map<String, String> parseConfigFile(String configPath) {
@@ -203,7 +284,7 @@ public class ConfigManager {
                     return;
                 }
                 String key = item.substring(0, separatorIndex);
-                String value = StringUtils.strip(item.substring(separatorIndex + 1));
+                String value = StringUtil.strip(item.substring(separatorIndex + 1));
                 configMap.put(key, value);
             });
         } catch (IOException e) {
@@ -213,162 +294,290 @@ public class ConfigManager {
         return configMap;
     }
 
-    private static void start() {
+    public void parseAgentConfig(String args) {
+        Map<String, String> agentMap = StringUtil.asMap(args);
+        if (!agentMap.isEmpty()) {
+            for (Map.Entry<String, String> entry : agentMap.entrySet()) {
+                String key = entry.getKey();
+                String value = entry.getValue();
+                if (StringUtil.isEmpty(key) || StringUtil.isEmpty(value)) {
+                    continue;
+                }
 
+                switch (key) {
+                    case ENABLE_DEBUG:
+                        setEnableDebug(value);
+                        break;
+                    case STORAGE_SERVICE_MODE:
+                        setStorageServiceMode(value);
+                        break;
+                    case STORAGE_SERVICE_HOST:
+                    case DISABLE_MODULE:
+                        continue;
+                    default:
+                        System.setProperty(key, value);
+                        break;
+                }
+            }
+            updateRuntimeConfig();
+        }
     }
 
-    private static void update() {
+    public void updateConfigFromService(ResponseBody serviceConfig) {
+        ServiceCollectConfig config = serviceConfig.getServiceCollectConfiguration();
+        setRecordRate(config.getSampleRate());
+        setTimeMachine(String.valueOf(config.isTimeMock()));
+        setAllowDayOfWeeks(config.getAllowDayOfWeeks());
+        setAllowTimeOfDayFrom(config.getAllowTimeOfDayFrom());
+        setAllowTimeOfDayTo(config.getAllowTimeOfDayTo());
+        setDynamicClassList(serviceConfig.getDynamicClassConfigurationList());
+        setExcludeServiceOperations(config.getExcludeServiceOperationSet());
+        setTargetAddress(serviceConfig.getTargetAddress());
+        setExtendField(serviceConfig.getExtendField());
 
+        updateRuntimeConfig();
     }
 
-    public String getStorageServiceMode() {
-        return storageServiceMode;
+    private void updateRuntimeConfig() {
+        Map<String, String> configMap = new HashMap<>();
+        configMap.put(DYNAMIC_RESULT_SIZE_LIMIT, String.valueOf(getDynamicResultSizeLimit()));
+        configMap.put(TIME_MACHINE, String.valueOf(startTimeMachine()));
+        configMap.put(DISABLE_REPLAY, System.getProperty(DISABLE_REPLAY));
+        configMap.put(DISABLE_RECORD, System.getProperty(DISABLE_RECORD));
+        configMap.put(DURING_WORK, Boolean.toString(inWorkingTime()));
+        configMap.put(AGENT_VERSION, agentVersion);
+        configMap.put(IP_VALIDATE, Boolean.toString(checkTargetAddress()));
+        configMap.put(STORAGE_SERVICE_MODE, storageServiceMode);
+        Map<String, String> extendFieldMap = getExtendField();
+        if (MapUtils.isNotEmpty(extendFieldMap)) {
+            configMap.putAll(extendFieldMap);
+        }
+
+        ConfigBuilder.create(getServiceName())
+            .enableDebug(isEnableDebug())
+            .addProperties(configMap)
+            .dynamicClassList(getDynamicClassList().stream()
+                .filter(item -> DynamicClassStatusEnum.RESET != item.getStatus()).collect(Collectors.toList()))
+            .excludeServiceOperations(getExcludeServiceOperations())
+            .dubboStreamReplayThreshold(getDubboStreamReplayThreshold())
+            .recordRate(getRecordRate())
+            .build();
+        publish(Config.get());
     }
 
-    public String getStorageServiceJdbcUrl() {
-        return storageServiceJdbcUrl;
+    private void publish(Config config) {
+        for (ConfigListener listener : listeners) {
+            if (listener.validate(config)) {
+                listener.load(config);
+            }
+        }
     }
 
-    public String getStorageServiceUsername() {
-        return storageServiceUsername;
+    public void setConfigInvalid() {
+        setRecordRate(0);
+        setAllowDayOfWeeks(0);
+        updateRuntimeConfig();
     }
 
-    public String getStorageServicePassword() {
-        return storageServicePassword;
-    }
-
-    public boolean isLocalStorage(){
+    public boolean isLocalStorage() {
         return STORAGE_MODE.equalsIgnoreCase(storageServiceMode);
     }
 
     public void setStorageServiceMode(String storageServiceMode) {
+        if (StringUtil.isEmpty(storageServiceMode)) {
+            return;
+        }
         this.storageServiceMode = storageServiceMode;
-    }
-
-    public void setStorageServiceJdbcUrl(String storageServiceJdbcUrl) {
-        this.storageServiceJdbcUrl = storageServiceJdbcUrl;
-    }
-
-    public void setStorageServiceUsername(String storageServiceUsername) {
-        this.storageServiceUsername = storageServiceUsername;
-    }
-
-    public void setStorageServicePassword(String storageServicePassword) {
-        this.storageServicePassword = storageServicePassword;
-    }
-
-    public String getStorageServiceWebPort() {
-        return storageServiceWebPort;
-    }
-
-    public String getServerServiceTcpPort() {
-        return serverServiceTcpPort;
-    }
-
-    public void parseAgentConfig(String args) {
-        Map<String, String> agentMap = StringUtil.asMap(args);
-        if (agentMap != null && agentMap.size() > 0) {
-            String mode = agentMap.get(STORAGE_SERVICE_MODE);
-            if (StringUtil.isNotEmpty(mode)) {
-                storageServiceMode = mode;
-            }
-            String url = agentMap.get(STORAGE_SERVICE_JDBC_URL);
-            if (StringUtil.isNotEmpty(url)) {
-                storageServiceJdbcUrl = url;
-            }
-            String userName = agentMap.get(STORAGE_SERVICE_USER_NAME);
-            if (StringUtil.isNotEmpty(userName)) {
-                storageServiceUsername = userName;
-            }
-            String password = agentMap.get(STORAGE_SERVICE_PASSWORD);
-            if (StringUtil.isNotEmpty(password)) {
-                storageServicePassword = password;
-            }
-            String webPort = agentMap.get(STORAGE_SERVICE_WEB_PORT);
-            if (StringUtil.isNotEmpty(webPort)) {
-                storageServiceWebPort = webPort;
-            }
-            String tcpPort = agentMap.get(SERVER_SERVICE_TCP_PORT);
-            if (StringUtil.isNotEmpty(tcpPort)) {
-                serverServiceTcpPort = tcpPort;
-            }
-        }
-    }
-
-    private List<DynamicClassEntity> parseDynamicClassList(String dynamicClassValue) {
-        if (StringUtil.isEmpty(dynamicClassValue)) {
-            return Collections.emptyList();
-        }
-
-        String[] array = dynamicClassValue.split(";");
-
-        if (array.length < 1) {
-            return Collections.emptyList();
-        }
-
-        List<DynamicClassEntity> list = new ArrayList<>(array.length);
-        for (int i = 0; i < array.length; i++) {
-            String[] subArray = array[i].split("#");
-            if (subArray.length < 3) {
-                continue;
-            }
-
-            String fullClassName = subArray[0];
-            String methodName = subArray[1];
-            String parameterTypes = subArray[2];
-
-            if (StringUtil.isEmpty(fullClassName) || StringUtil.isEmpty(methodName) || StringUtil.isEmpty(parameterTypes)) {
-                continue;
-            }
-
-            list.add(new DynamicClassEntity(fullClassName, methodName, parameterTypes));
-        }
-        return list;
-    }
-
-    public int getRecordRate() {
-        return recordRate;
-    }
-
-    public void setRecordRate(int recordRate) {
-        this.recordRate = recordRate;
-    }
-
-    public List<DynamicClassEntity> getDynamicClassList() {
-        return dynamicClassList;
-    }
-
-    public void setDynamicClassList(List<DynamicClassEntity> dynamicClassList) {
-        this.dynamicClassList = dynamicClassList;
     }
 
     public int getDynamicResultSizeLimit() {
         return dynamicResultSizeLimit;
     }
 
-    public void setDynamicResultSizeLimit(int dynamicResultSizeLimit) {
-        this.dynamicResultSizeLimit = dynamicResultSizeLimit;
+    public void setDynamicResultSizeLimit(String dynamicResultSizeLimit) {
+        if (StringUtil.isEmpty(dynamicResultSizeLimit)) {
+            return;
+        }
+        this.dynamicResultSizeLimit = Integer.parseInt(dynamicResultSizeLimit);
+        System.setProperty(DYNAMIC_RESULT_SIZE_LIMIT, dynamicResultSizeLimit);
     }
 
     public boolean startTimeMachine() {
         return startTimeMachine;
     }
 
+    public EnumSet<DayOfWeek> getAllowDayOfWeeks() {
+        return allowDayOfWeeks;
+    }
+
+    public void setAllowDayOfWeeks(int allowDayOfWeeks) {
+        if (allowDayOfWeeks <= 0) {
+            this.allowDayOfWeeks = EnumSet.noneOf(DayOfWeek.class);
+            return;
+        }
+        // binary 1111111
+        if (allowDayOfWeeks == 127) {
+            this.allowDayOfWeeks = EnumSet.allOf(DayOfWeek.class);
+            return;
+        }
+        EnumSet<DayOfWeek> dayOfWeeks = EnumSet.noneOf(DayOfWeek.class);
+        String recordCycle = Integer.toBinaryString(allowDayOfWeeks);
+        int index = 0;
+        for (int length = recordCycle.length() - 1; length >= 0; length--) {
+            index++;
+            if (recordCycle.charAt(length) == '1') {
+                dayOfWeeks.add(DayOfWeek.of(index));
+            }
+        }
+        this.allowDayOfWeeks = dayOfWeeks;
+        System.setProperty(ALLOW_DAY_WEEKS, String.valueOf(allowDayOfWeeks));
+    }
+
+    public LocalTime getAllowTimeOfDayFrom() {
+        return allowTimeOfDayFrom;
+    }
+
+    public void setAllowTimeOfDayFrom(String allowTimeOfDayFrom) {
+        if (StringUtil.isEmpty(allowTimeOfDayFrom)) {
+            return;
+        }
+        this.allowTimeOfDayFrom = LocalTime.parse(allowTimeOfDayFrom,
+            DateTimeFormatter.ofPattern("HH:mm"));
+        System.setProperty(ALLOW_TIME_FROM, allowTimeOfDayFrom);
+    }
+
+    public LocalTime getAllowTimeOfDayTo() {
+        return allowTimeOfDayTo;
+    }
+
+    public void setAllowTimeOfDayTo(String allowTimeOfDayTo) {
+        if (StringUtil.isEmpty(allowTimeOfDayTo)) {
+            return;
+        }
+        this.allowTimeOfDayTo = LocalTime.parse(allowTimeOfDayTo,
+            DateTimeFormatter.ofPattern("HH:mm"));
+        System.setProperty(ALLOW_TIME_TO, allowTimeOfDayTo);
+    }
+
+    public boolean inWorkingTime() {
+        return nextWorkTime() <= 0L;
+    }
+
+    private long nextWorkTime() {
+        LocalDateTime dateTime = LocalDateTime.now();
+        LocalTime beginTime = dateTime.toLocalTime();
+        int diffDays = 0;
+        if (beginTime.isAfter(allowTimeOfDayFrom) && beginTime.isAfter(allowTimeOfDayTo)) {
+            diffDays++;
+            dateTime = dateTime.plusDays(1);
+        }
+        while (!allowDayOfWeeks.contains(dateTime.getDayOfWeek()) && diffDays < 7) {
+            diffDays++;
+            dateTime = dateTime.plusDays(1);
+        }
+        LocalDateTime nextTime = LocalDateTime.of(dateTime.toLocalDate(), allowTimeOfDayFrom);
+        return Duration.between(LocalDateTime.now(), nextTime).toMillis();
+    }
+
+    public List<String> getDisabledModules() {
+        return disabledModules;
+    }
+
+    public void setDisabledModules(String disabledModules) {
+        if (StringUtil.isEmpty(disabledModules)) {
+            if (this.disabledModules == null) {
+                this.disabledModules = Collections.emptyList();
+            }
+            return;
+        }
+
+        this.disabledModules = Arrays.asList(StringUtil.split(disabledModules, ','));
+    }
+
+
+    public List<String> getRetransformModules() {
+        return retransformModules;
+    }
+
+    public void setRetransformModules(String retransformModules) {
+        if (StringUtil.isEmpty(retransformModules)) {
+            if (this.retransformModules == null) {
+                this.retransformModules = Collections.emptyList();
+            }
+            return;
+        }
+
+        this.retransformModules = Arrays.asList(StringUtil.split(retransformModules, ','));
+    }
+
+    public void setExcludeServiceOperations(String excludeServiceOperations) {
+        if (StringUtil.isEmpty(excludeServiceOperations)) {
+            if (this.excludeServiceOperations == null) {
+                this.excludeServiceOperations = Collections.emptySet();
+            }
+            return;
+        }
+
+        this.excludeServiceOperations = new HashSet<>(
+            Arrays.asList(StringUtil.split(excludeServiceOperations, ',')));
+    }
+
+    public void setExcludeServiceOperations(Set<String> excludeServiceOperationSet) {
+        if (CollectionUtil.isEmpty(excludeServiceOperationSet)) {
+            return;
+        }
+        this.excludeServiceOperations = excludeServiceOperationSet;
+    }
+
+    public Set<String> getExcludeServiceOperations() {
+        return excludeServiceOperations;
+    }
+
+    public void setTargetAddress(String targetAddress) {
+        this.targetAddress = targetAddress;
+    }
+
+    public boolean checkTargetAddress() {
+        String localHost = NetUtils.getIpAddress();
+        // Compatible containers can't get IPAddress
+        if (StringUtil.isEmpty(localHost)) {
+            return true;
+        }
+
+        return localHost.equals(targetAddress);
+    }
+
+    public void setDubboStreamReplayThreshold(String dubboStreamReplayThreshold) {
+        this.dubboStreamReplayThreshold = Integer.parseInt(dubboStreamReplayThreshold);
+    }
+
+    public int getDubboStreamReplayThreshold() {
+        return dubboStreamReplayThreshold;
+    }
+
+    public Map<String, String> getExtendField() {
+        return extendField;
+    }
+
+    public void setExtendField(Map<String, String> extendField) {
+        this.extendField = extendField;
+    }
+
     @Override
     public String toString() {
         return "ConfigManager{" +
-                "enableDebug=" + enableDebug +
-                ", agentVersion='" + agentVersion + '\'' +
-                ", serviceName='" + serviceName + '\'' +
-                ", storageServiceHost='" + storageServiceHost + '\'' +
-                ", configServiceHost='" + configServiceHost + '\'' +
-                ", configPath='" + configPath + '\'' +
-                ", storageServiceMode='" + storageServiceMode + '\'' +
-                ", storageServiceJdbcUrl='" + storageServiceJdbcUrl + '\'' +
-                ", storageServiceUsername='" + storageServiceUsername + '\'' +
-                ", storageServicePassword='" + storageServicePassword + '\'' +
-                ", storageServiceWebPort='" + storageServiceWebPort + '\'' +
-                ", serverServiceTcpPort='" + serverServiceTcpPort + '\'' +
-                '}';
+            "enableDebug=" + enableDebug +
+            ", agentVersion='" + agentVersion + '\'' +
+            ", serviceName='" + serviceName + '\'' +
+            ", storageServiceHost='" + storageServiceHost + '\'' +
+            ", configPath='" + configPath + '\'' +
+            ", storageServiceMode='" + storageServiceMode + '\'' +
+            ", recordRate='" + recordRate + '\'' +
+            ", startTimeMachine='" + startTimeMachine + '\'' +
+            ", allowDayOfWeeks='" + allowDayOfWeeks + '\'' +
+            ", allowTimeOfDayFrom='" + allowTimeOfDayFrom + '\'' +
+            ", allowTimeOfDayTo='" + allowTimeOfDayTo + '\'' +
+            ", dynamicClassList='" + dynamicClassList + '\'' +
+            '}';
     }
 }

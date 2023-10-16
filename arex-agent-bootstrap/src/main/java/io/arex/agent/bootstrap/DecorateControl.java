@@ -20,8 +20,4 @@ public final class DecorateControl {
     public void setDecorated() {
         this.hasDecorated = true;
     }
-
-    public static class URLClassLoaderSwitch {
-
-    }
 }

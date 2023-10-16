@@ -7,7 +7,38 @@
     <groupId>io.arex</groupId>
     <artifactId>arex-agent-parent</artifactId>
     <packaging>pom</packaging>
-    <version>0.0.1</version>
+    <version>${revision}</version>
+
+    <name>arex-agent-java</name>
+    <url>https://github.com/arextest/arex-agent-java</url>
+
+    <scm>
+        <url>https://github.com/arextest/arex-agent-java</url>
+        <connection>scm:git:https://github.com/arextest/arex-agent-java.git</connection>
+        <developerConnection>scm:git:https://github.com/arextest/arex-agent-java.git</developerConnection>
+        <tag>HEAD</tag>
+    </scm>
+
+    <issueManagement>
+        <system>GitHub</system>
+        <url>https://github.com/arextest/arex-agent-java/issues</url>
+    </issueManagement>
+
+    <licenses>
+        <license>
+            <name>The Apache Software License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>AREX</name>
+            <email>arex.test.com@gmail.com</email>
+            <organization>AREX group</organization>
+            <organizationUrl>http://www.arextest.com</organizationUrl>
+        </developer>
+    </developers>
 
     <modules>
         <module>arex-agent</module>
@@ -15,11 +46,15 @@
         <module>arex-agent-core</module>
         <module>arex-instrumentation</module>
         <module>arex-instrumentation-foundation</module>
-        <module>arex-cli-parent</module>
         <module>arex-attacher</module>
+        <module>arex-integration-tests</module>
+        <module>arex-instrumentation-api</module>
+        <module>arex-third-party</module>
     </modules>
 
     <properties>
+        <!-- Maven CI Friendly Versions https://maven.apache.org/maven-ci-friendly.html -->
+        <revision>0.3.10</revision>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
@@ -34,6 +69,32 @@
         <enforcer.qBanDuplicateClasses.skip>true</enforcer.qBanDuplicateClasses.skip>
         <commons-lang3.version>3.7</commons-lang3.version>
         <version.junit-jupiter>5.8.2</version.junit-jupiter>
+        <mockito-junit-jupiter.version>4.7.0</mockito-junit-jupiter.version>
+        <jackson.version>2.13.1</jackson.version>
+        <gson.version>2.10.1</gson.version>
+        <sonar.exclusions>
+            **/test/**,
+            **/*Test.java,
+            **/target/**,
+            **/model/**,
+            **/thirdparty/**,
+            **/*Instrumentation.java,
+            **/JJWTGenerator.java
+        </sonar.exclusions>
+        <sonar.test.exclusions>
+            **/test/**,
+            **/*Test.java
+        </sonar.test.exclusions>
+        <sonar.coverage.exclusions>
+            **/test/**,
+            **/*Test.java,
+            **/target/**,
+            **/model/**,
+            **/context/**,
+            **/wrapper/**,
+            **/thirdparty/**,
+            **/RedisCommandBuilderImpl.java
+        </sonar.coverage.exclusions>
     </properties>
 
     <dependencyManagement>
@@ -60,12 +121,12 @@
             </dependency>
             <dependency>
                 <groupId>${project.groupId}</groupId>
-                <artifactId>arex-storage-extension</artifactId>
+                <artifactId>arex-instrumentation-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>${project.groupId}</groupId>
-                <artifactId>arex-server-extension</artifactId>
+                <artifactId>arex-third-party</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -89,9 +150,34 @@
                 <version>${byte-buddy.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-lang3</artifactId>
-                <version>${commons-lang3.version}</version>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-api</artifactId>
+                <version>${version.junit-jupiter}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-engine</artifactId>
+                <version>${version.junit-jupiter}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-params</artifactId>
+                <version>${version.junit-jupiter}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.mockito</groupId>
+                <artifactId>mockito-junit-jupiter</artifactId>
+                <version>${mockito-junit-jupiter.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.mockito</groupId>
+                <artifactId>mockito-inline</artifactId>
+                <version>${mockito-junit-jupiter.version}</version>
+                <scope>test</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -100,24 +186,52 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
-            <version>${version.junit-jupiter}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>
-            <version>${version.junit-jupiter}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-params</artifactId>
-            <version>${version.junit-jupiter}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-inline</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
 
+    <profiles>
+        <profile>
+            <id>default</id>
+            <properties>
+                <jarName>${project.artifactId}</jarName>
+                <bootStrapJarName>arex-agent-bootstrap.${project.packaging}</bootStrapJarName>
+            </properties>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+        </profile>
+        <profile>
+            <id>jar-with-version</id>
+            <properties>
+                <jarName>${project.artifactId}-${project.version}</jarName>
+                <bootStrapJarName>arex-agent-bootstrap-${project.version}.${project.packaging}</bootStrapJarName>
+            </properties>
+        </profile>
+    </profiles>
+
     <build>
+        <finalName>${jarName}</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -132,7 +246,62 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>2.22.2</version>
+                <version>3.1.2</version>
+                <configuration>
+                    <argLine>
+                        @{argLine}
+                        --add-opens java.base/java.lang=ALL-UNNAMED
+                        --add-opens java.base/java.math=ALL-UNNAMED
+                        --add-opens java.base/java.util=ALL-UNNAMED
+                        --add-opens java.base/java.net=ALL-UNNAMED
+                        --add-opens java.base/java.time=ALL-UNNAMED
+                        --add-opens java.xml/com.sun.org.apache.xerces.internal.jaxp.datatype=ALL-UNNAMED
+                    </argLine>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.8</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.4.1</version>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
         <resources>

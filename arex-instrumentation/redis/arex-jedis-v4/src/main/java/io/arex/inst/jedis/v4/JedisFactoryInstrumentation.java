@@ -1,8 +1,7 @@
 package io.arex.inst.jedis.v4;
 
-import io.arex.foundation.api.MethodInstrumentation;
-import io.arex.foundation.api.ModuleDescription;
-import io.arex.foundation.api.TypeInstrumentation;
+import io.arex.inst.extension.MethodInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
@@ -19,9 +18,6 @@ import static java.util.Collections.singletonList;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 public class JedisFactoryInstrumentation extends TypeInstrumentation {
-    public JedisFactoryInstrumentation(ModuleDescription module) {
-        super(module);
-    }
     @Override
     public ElementMatcher<TypeDescription> typeMatcher() {
         return named("redis.clients.jedis.JedisFactory");
@@ -37,31 +33,31 @@ public class JedisFactoryInstrumentation extends TypeInstrumentation {
     @SuppressWarnings("unused")
     public static class MakeObjectAdvice {
 
-        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class)
-        public static boolean onEnter() {
-            return true;
+        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
+        public static Jedis onEnter(@Advice.FieldValue("jedisSocketFactory") JedisSocketFactory factory,
+                                    @Advice.FieldValue("clientConfig") JedisClientConfig clientConfig) {
+            return new JedisWrapper(factory, clientConfig);
         }
 
+        // need throw JedisException, not suppress throwable
         @Advice.OnMethodExit
-        public static void  onExit(@Advice.FieldValue("jedisSocketFactory") JedisSocketFactory factory,
-                                   @Advice.FieldValue("clientConfig") JedisClientConfig clientConfig,
+        public static void  onExit(@Advice.Enter Jedis jedis,
                                    @Advice.Return(readOnly = false) PooledObject<Jedis> result) throws Exception {
-            Jedis jedis = null;
+            if (jedis == null) {
+                return;
+            }
             try {
-                jedis = new JedisWrapper(factory, clientConfig);
                 jedis.connect();
                 result = new DefaultPooledObject<>(jedis);
             } catch (JedisException jex) {
-                if (jedis != null) {
-                    try {
-                        jedis.quit();
-                    } catch (RuntimeException var5) {
-                    }
+                try {
+                    jedis.quit();
+                } catch (RuntimeException var5) {
+                }
 
-                    try {
-                        jedis.close();
-                    } catch (RuntimeException var4) {
-                    }
+                try {
+                    jedis.close();
+                } catch (RuntimeException var4) {
                 }
                 throw jex;
             }

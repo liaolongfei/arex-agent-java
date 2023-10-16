@@ -1,14 +1,38 @@
 package io.arex.foundation.serializer;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import io.arex.foundation.util.StringUtil;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.fasterxml.jackson.databind.ObjectMapper.DefaultTypeResolverBuilder;
+import com.fasterxml.jackson.databind.ObjectMapper.DefaultTyping;
+import com.fasterxml.jackson.databind.jsontype.TypeResolverBuilder;
+import com.fasterxml.jackson.databind.jsontype.impl.LaissezFaireSubTypeValidator;
+import com.google.auto.service.AutoService;
+import com.google.common.collect.Range;
+
+import io.arex.agent.bootstrap.util.StringUtil;
 import com.fasterxml.jackson.annotation.JsonIgnoreType;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.databind.module.SimpleModule;
-import org.apache.commons.lang3.time.DateFormatUtils;
-import org.apache.commons.lang3.time.FastDateFormat;
+import com.fasterxml.jackson.databind.ser.BeanPropertyWriter;
+import com.fasterxml.jackson.databind.ser.BeanSerializerModifier;
+
+import io.arex.agent.thirdparty.util.time.DateFormatUtils;
+import io.arex.agent.thirdparty.util.time.FastDateFormat;
+import io.arex.foundation.serializer.custom.FastUtilAdapterFactory;
+import io.arex.foundation.serializer.custom.GuavaRangeSerializer;
+import io.arex.foundation.util.JdkUtils;
+import io.arex.inst.runtime.log.LogManager;
+import io.arex.inst.runtime.config.Config;
+import io.arex.inst.runtime.model.ArexConstants;
+import io.arex.inst.runtime.model.SerializeSkipInfo;
+import io.arex.inst.runtime.serializer.StringSerializable;
+import io.arex.inst.runtime.util.TypeUtil;
+import java.sql.Time;
+import java.time.Instant;
+import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
+import org.joda.time.format.DateTimeFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,71 +51,125 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public final class JacksonSerializer implements SerializeUtils.StringSerializable {
+@AutoService(StringSerializable.class)
+public final class JacksonSerializer implements StringSerializable {
     public static final String EXTENSION = "json";
+
+    private static final String SKIP_INFO_LIST_TYPE = "java.util.ArrayList-io.arex.inst.runtime.model.SerializeSkipInfo";
 
     private static final Logger LOGGER = LoggerFactory.getLogger(JacksonSerializer.class);
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final SimpleModule MODULE = new SimpleModule();
+    private final ObjectMapper MAPPER = new ObjectMapper();
+    private final Map<String, List<String>> skipInfoMap = new ConcurrentHashMap<>();
+    private static final SimpleModule MODULE = new JacksonSimpleModule();
 
-    public static final JacksonSerializer INSTANCE = new JacksonSerializer();
+    public static JacksonSerializer INSTANCE = new JacksonSerializer();
 
-    private JacksonSerializer() {
+    @Override
+    public String name() {
+        return "jackson";
+    }
+
+    public JacksonSerializer() {
+        buildSkipInfoMap();
         configMapper();
         customTimeFormatSerializer(MODULE);
         customTimeFormatDeserializer(MODULE);
-
+        customTypeResolver();
         MAPPER.registerModule(MODULE);
     }
 
+    private void customTypeResolver() {
+        TypeResolverBuilder<?> typeResolver = new CustomTypeResolverBuilder();
+        typeResolver.init(JsonTypeInfo.Id.CLASS, null);
+        typeResolver.inclusion(JsonTypeInfo.As.PROPERTY);
+        typeResolver.typeProperty("@CLASS");
+        MAPPER.setDefaultTyping(typeResolver);
+    }
+
+    private void buildSkipInfoMap() {
+        try {
+            Config config = Config.get();
+            if (config == null) {
+                return;
+            }
+            String skipInfoString = config
+                    .getString(ArexConstants.SERIALIZE_SKIP_INFO_CONFIG_KEY, StringUtil.EMPTY);
+            if (StringUtil.isBlank(skipInfoString)) {
+                return;
+            }
+            JavaType javaType = MAPPER.getTypeFactory().constructType(TypeUtil.forName(SKIP_INFO_LIST_TYPE));
+            List<SerializeSkipInfo> serializeSkipInfos = MAPPER.readValue(skipInfoString, javaType);
+
+            if (serializeSkipInfos == null || serializeSkipInfos.isEmpty()) {
+                return;
+            }
+            for (SerializeSkipInfo skipInfo : serializeSkipInfos) {
+                String className = skipInfo.getFullClassName();
+                List<String> fieldNameList = skipInfo.getFieldNameList();
+                if (StringUtil.isBlank(className) || fieldNameList == null) {
+                    continue;
+                }
+                skipInfoMap.put(className, fieldNameList);
+            }
+        } catch (Throwable ex) {
+            LOGGER.warn("buildSkipInfoMap", ex);
+        }
+    }
+
+    public List<String> getSkipFieldNameList(String className) {
+        return skipInfoMap.get(className);
+    }
+
     @Override
-    public String serialize(Object object) {
+    public String serialize(Object object) throws Throwable {
         if (object == null) {
             return null;
         }
-        try {
-            return MAPPER.writeValueAsString(object);
-        } catch (Exception ex) {
-            LOGGER.warn("jackson-serialize", ex);
-        }
-        return null;
+
+        return MAPPER.writeValueAsString(object);
     }
 
     @Override
-    public <T> T deserialize(String json, Class<T> clazz) {
+    public <T> T deserialize(String json, Class<T> clazz) throws Throwable {
         if (StringUtil.isEmpty(json) || clazz == null) {
             return null;
         }
-        try {
-            return MAPPER.readValue(json, clazz);
-        } catch (Exception ex) {
-            LOGGER.warn("jackson-deserialize-clazz", ex);
-        }
-        return null;
+
+        return MAPPER.readValue(json, clazz);
     }
 
     @Override
-    public <T> T deserialize(String json, Type type) {
+    public <T> T deserialize(String json, Type type) throws Throwable {
         if (StringUtil.isEmpty(json) || type == null) {
             return null;
         }
 
         JavaType javaType = MAPPER.getTypeFactory().constructType(type);
-        return JacksonSerializer.INSTANCE.deserialize(json, javaType, type);
+        return deserialize(json, javaType);
     }
 
-    public <T> T deserialize(String json, JavaType javaType, Type type) {
+    @Override
+    public StringSerializable reCreateSerializer() {
+        INSTANCE = new JacksonSerializer();
+        return INSTANCE;
+    }
+
+    @Override
+    public boolean isDefault() {
+        return true;
+    }
+
+    public <T> T deserialize(String json, JavaType javaType) {
         try {
             return MAPPER.readValue(json, javaType);
-        } catch (Exception ex) {
-            LOGGER.warn("jackson-deserialize-type", ex);
+        } catch (Throwable ex) {
+            LogManager.warn("jackson-deserialize-type", ex);
         }
         return null;
     }
 
     private void configMapper() {
-        MAPPER.setSerializationInclusion(JsonInclude.Include.NON_NULL);
         MAPPER.configure(JsonGenerator.Feature.IGNORE_UNKNOWN, true);
         //MAPPER.configure(JsonReadFeature.ALLOW_UNQUOTED_FIELD_NAMES.mappedFeature(), true);
         MAPPER.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
@@ -99,41 +177,214 @@ public final class JacksonSerializer implements SerializeUtils.StringSerializabl
         MAPPER.configure(DeserializationFeature.FAIL_ON_IGNORED_PROPERTIES, false);
         MAPPER.configure(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES, false);
         MAPPER.configure(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_AS_NULL, true);
-        MAPPER.configure(MapperFeature.ACCEPT_CASE_INSENSITIVE_PROPERTIES, true);
     }
 
     private void customTimeFormatSerializer(SimpleModule module) {
-        //module.addSerializer(DateTime.class, new DateTimeSerialize());
+        module.addSerializer(DateTime.class, new DateTimeSerialize());
         module.addSerializer(LocalDateTime.class, new LocalDateTimeSerialize());
         module.addSerializer(LocalDate.class, new LocalDateSerialize());
         module.addSerializer(LocalTime.class, new LocalTimeSerialize());
-        //module.addSerializer(org.joda.time.LocalDateTime.class, new JodaLocalDateTimeSerialize());
-        //module.addSerializer(org.joda.time.LocalDate.class, new JodaLocalDateSerialize());
-        //module.addSerializer(org.joda.time.LocalTime.class, new JodaLocalTimeSerialize());
+        module.addSerializer(org.joda.time.LocalDateTime.class, new JodaLocalDateTimeSerialize());
+        module.addSerializer(org.joda.time.LocalDate.class, new JodaLocalDateSerialize());
+        module.addSerializer(org.joda.time.LocalTime.class, new JodaLocalTimeSerialize());
         module.addSerializer(Calendar.class, new CalendarSerialize());
         module.addSerializer(GregorianCalendar.class, new GregorianCalendarSerialize());
         module.addSerializer(Timestamp.class, new TimestampSerialize());
         module.addSerializer(XMLGregorianCalendar.class, new XMLGregorianCalendarSerialize());
+        // java.sql.Date/Time serialize same as java.util.Date
+        module.addSerializer(Date.class, new DateSerialize());
+        module.addSerializer(Instant.class, new InstantSerialize());
+        module.addSerializer(Range.class, new GuavaRangeSerializer.JacksonRangeSerializer());
     }
 
     private void customTimeFormatDeserializer(SimpleModule module) {
-        //module.addDeserializer(DateTime.class, new DateTimeDeserialize());
+        module.addDeserializer(DateTime.class, new DateTimeDeserialize());
         module.addDeserializer(LocalDateTime.class, new LocalDateTimeDeserialize());
         module.addDeserializer(LocalDate.class, new LocalDateDeserialize());
         module.addDeserializer(LocalTime.class, new LocalTimeDeserialize());
-        //module.addDeserializer(org.joda.time.LocalDateTime.class, new JodaLocalDateTimeDeserialize());
-        //module.addDeserializer(org.joda.time.LocalDate.class, new JodaLocalDateDeserialize());
-        //module.addDeserializer(org.joda.time.LocalTime.class, new JodaLocalTimeDeserialize());
+        module.addDeserializer(org.joda.time.LocalDateTime.class, new JodaLocalDateTimeDeserialize());
+        module.addDeserializer(org.joda.time.LocalDate.class, new JodaLocalDateDeserialize());
+        module.addDeserializer(org.joda.time.LocalTime.class, new JodaLocalTimeDeserialize());
         module.addDeserializer(Calendar.class, new CalendarDeserialize());
         module.addDeserializer(GregorianCalendar.class, new GregorianCalendarDeserialize());
         module.addDeserializer(Timestamp.class, new TimestampDeserialize());
         module.addDeserializer(XMLGregorianCalendar.class, new XMLGregorianCalendarDeserialize());
+        module.addDeserializer(Date.class, new DateDeserialize());
+        module.addDeserializer(java.sql.Date.class, new SqlDateDeserialize());
+        module.addDeserializer(Time.class, new SqlTimeDeserialize());
+        module.addDeserializer(Instant.class, new InstantDeserialize());
+        module.addDeserializer(Range.class, new GuavaRangeSerializer.JacksonRangeDeserializer());
+    }
+
+    private static class JacksonSimpleModule extends SimpleModule {
+
+        @Override
+        public void setupModule(SetupContext context) {
+            super.setupModule(context);
+            context.addBeanSerializerModifier(new CustomSerializerModifier());
+        }
+    }
+
+    /**
+     * custom serialized fields
+     */
+    public static class CustomSerializerModifier extends BeanSerializerModifier {
+
+        @Override
+        public List<BeanPropertyWriter> changeProperties(SerializationConfig config,
+                                                         BeanDescription beanDesc, List<BeanPropertyWriter> beanProperties) {
+
+            String className = beanDesc.getBeanClass().getName();
+            // Special treatment MybatisPlus, only serializes the paramNameValuePairs field of QueryWrapper or UpdateWrapper.
+            if (MYBATIS_PLUS_CLASS_LIST.contains(className)) {
+                beanProperties.removeIf(beanPropertyWriter -> !StringUtil.equals(beanPropertyWriter.getName(), "paramNameValuePairs"));
+            }
+            if (TK_MYBATIS_PLUS_CLASS_LIST.contains(className)){
+                beanProperties.removeIf(beanPropertyWriter -> StringUtil.equals(beanPropertyWriter.getName(),"table"));
+            }
+
+            List<String> fieldNameList = JacksonSerializer.INSTANCE.getSkipFieldNameList(className);
+
+            if (fieldNameList == null) {
+                return beanProperties;
+            }
+
+            if (fieldNameList.isEmpty()) {
+                beanProperties.clear();
+                return beanProperties;
+            }
+
+            beanProperties.removeIf(beanPropertyWriter -> fieldNameList.contains(beanPropertyWriter.getName()));
+            return beanProperties;
+        }
     }
 
 
     // region Custom Serializer/Deserialize
 
 
+    static class DateTimeSerialize extends com.fasterxml.jackson.databind.JsonSerializer<DateTime> {
+
+        @Override
+        public void serialize(DateTime value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
+            gen.writeString(value.toString(DatePatternConstants.SIMPLE_DATE_FORMAT_WITH_TIMEZONE_DATETIME));
+        }
+    }
+
+
+    static class DateTimeDeserialize extends com.fasterxml.jackson.databind.JsonDeserializer<DateTime> {
+
+        @Override
+        public DateTime deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+            JsonNode node = p.getCodec().readTree(p);
+            TimeZone timeZone = TimezoneParser.INSTANCE.parse(node.asText());
+            DateTimeZone dateTimeZone = DateTimeZone.forTimeZone(timeZone);
+            Date date = DateFormatParser.INSTANCE.parseDate(node.asText(), timeZone);
+            if (date == null) {
+                return null;
+            }
+            return new DateTime(date.getTime()).withZone(dateTimeZone);
+        }
+    }
+
+    static class JodaLocalDateTimeSerialize extends com.fasterxml.jackson.databind.JsonSerializer<org.joda.time.LocalDateTime> {
+
+        @Override
+        public void serialize(org.joda.time.LocalDateTime value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
+            gen.writeString(value.toString(DatePatternConstants.SIMPLE_DATE_FORMAT_MILLIS));
+        }
+    }
+
+
+    static class JodaLocalDateTimeDeserialize extends com.fasterxml.jackson.databind.JsonDeserializer<org.joda.time.LocalDateTime> {
+
+        @Override
+        public org.joda.time.LocalDateTime deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+            JsonNode node = p.getCodec().readTree(p);
+            return org.joda.time.LocalDateTime.parse(node.asText(), DateTimeFormat.forPattern(DatePatternConstants.SIMPLE_DATE_FORMAT_MILLIS));
+        }
+    }
+
+    static class JodaLocalDateSerialize extends com.fasterxml.jackson.databind.JsonSerializer<org.joda.time.LocalDate> {
+
+        @Override
+        public void serialize(org.joda.time.LocalDate value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
+            gen.writeString(value.toString(DatePatternConstants.SHORT_DATE_FORMAT));
+        }
+    }
+
+
+    static class JodaLocalDateDeserialize extends com.fasterxml.jackson.databind.JsonDeserializer<org.joda.time.LocalDate> {
+
+        @Override
+        public org.joda.time.LocalDate deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+            JsonNode node = p.getCodec().readTree(p);
+            return org.joda.time.LocalDate.parse(node.asText(), DateTimeFormat.forPattern(DatePatternConstants.SHORT_DATE_FORMAT));
+        }
+    }
+
+
+    static class JodaLocalTimeSerialize extends com.fasterxml.jackson.databind.JsonSerializer<org.joda.time.LocalTime> {
+
+        @Override
+        public void serialize(org.joda.time.LocalTime value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
+            gen.writeString(value.toString(DatePatternConstants.SHORT_TIME_FORMAT_MILLISECOND));
+        }
+    }
+
+
+    static class JodaLocalTimeDeserialize extends com.fasterxml.jackson.databind.JsonDeserializer<org.joda.time.LocalTime> {
+
+        @Override
+        public org.joda.time.LocalTime deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+            JsonNode node = p.getCodec().readTree(p);
+            return org.joda.time.LocalTime.parse(node.asText(), DateTimeFormat.forPattern(DatePatternConstants.SHORT_TIME_FORMAT_MILLISECOND));
+        }
+    }
+
+    static class DateSerialize extends com.fasterxml.jackson.databind.JsonSerializer<Date> {
+
+        @Override
+        public void serialize(Date value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
+            gen.writeString(DateFormatUtils.format(value, DatePatternConstants.SIMPLE_DATE_FORMAT_MILLIS));
+        }
+    }
+
+
+    static class DateDeserialize extends com.fasterxml.jackson.databind.JsonDeserializer<Date> {
+
+        @Override
+        public Date deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+            JsonNode node = p.getCodec().readTree(p);
+            return DateFormatParser.INSTANCE.parseDate(node.asText());
+        }
+    }
+
+    static class SqlDateDeserialize extends com.fasterxml.jackson.databind.JsonDeserializer<java.sql.Date> {
+
+        @Override
+        public java.sql.Date deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+            JsonNode node = p.getCodec().readTree(p);
+            Date date = DateFormatParser.INSTANCE.parseDate(node.asText());
+            if (date == null) {
+                return new java.sql.Date(System.currentTimeMillis());
+            }
+            return new java.sql.Date(date.getTime());
+        }
+    }
+
+    static class SqlTimeDeserialize extends com.fasterxml.jackson.databind.JsonDeserializer<Time> {
+
+        @Override
+        public Time deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+            JsonNode node = p.getCodec().readTree(p);
+            Date date = DateFormatParser.INSTANCE.parseDate(node.asText());
+            if (date == null) {
+                date = new Date();
+            }
+            return new Time(date.getTime());
+        }
+    }
 
     static class LocalDateTimeSerialize extends com.fasterxml.jackson.databind.JsonSerializer<LocalDateTime> {
 
@@ -141,7 +392,7 @@ public final class JacksonSerializer implements SerializeUtils.StringSerializabl
         public void serialize(LocalDateTime value, JsonGenerator gen, SerializerProvider serializers)
                 throws IOException {
             gen.writeString(
-                    value.format(DateFormatParser.INSTANCE.getFormatter(DatePatternConstants.SIMPLE_DATE_FORMAT_MILLIS)));
+                    value.format(DateFormatParser.INSTANCE.getFormatter(DatePatternConstants.localDateTimeFormat)));
         }
     }
 
@@ -152,7 +403,7 @@ public final class JacksonSerializer implements SerializeUtils.StringSerializabl
         public LocalDateTime deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
             JsonNode node = p.getCodec().readTree(p);
             return LocalDateTime.parse(node.asText(),
-                    DateFormatParser.INSTANCE.getFormatter(node.asText(), DatePatternConstants.SIMPLE_DATE_FORMAT_MILLIS));
+                    DateFormatParser.INSTANCE.getFormatter(DatePatternConstants.localDateTimeFormat));
         }
     }
 
@@ -183,7 +434,7 @@ public final class JacksonSerializer implements SerializeUtils.StringSerializabl
         @Override
         public void serialize(LocalTime value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
             gen.writeString(value
-                    .format(DateFormatParser.INSTANCE.getFormatter(DatePatternConstants.SHORT_TIME_FORMAT_MILLISECOND)));
+                    .format(DateFormatParser.INSTANCE.getFormatter(DatePatternConstants.localTimeFormat)));
         }
     }
 
@@ -194,7 +445,7 @@ public final class JacksonSerializer implements SerializeUtils.StringSerializabl
         public LocalTime deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
             JsonNode node = p.getCodec().readTree(p);
             return LocalTime.parse(node.asText(), DateFormatParser.INSTANCE
-                    .getFormatter(node.asText(), DatePatternConstants.SHORT_TIME_FORMAT_MILLISECOND));
+                    .getFormatter(DatePatternConstants.localTimeFormat));
         }
     }
 
@@ -295,7 +546,24 @@ public final class JacksonSerializer implements SerializeUtils.StringSerializabl
         }
     }
 
+    static class InstantSerialize extends JsonSerializer<Instant> {
 
+        @Override
+        public void serialize(Instant value, JsonGenerator gen, SerializerProvider serializers)
+            throws IOException {
+            gen.writeString(value.toString());
+        }
+    }
+
+    static class InstantDeserialize extends JsonDeserializer<Instant> {
+
+        @Override
+        public Instant deserialize(JsonParser p, DeserializationContext ctxt)
+            throws IOException {
+            JsonNode node = p.getCodec().readTree(p);
+            return Instant.parse(node.asText());
+        }
+    }
 
     // endregion
 
@@ -305,16 +573,18 @@ public final class JacksonSerializer implements SerializeUtils.StringSerializabl
     }
 
 
-    static final class DatePatternConstants {
+    public static final class DatePatternConstants {
         /**
          * yyyy-MM-dd HH:mm:ss.SSS/yyyy-MM-dd'T'HH:mm:ss.SSSZZZ
          */
         public static final String SIMPLE_DATE_FORMAT = "yyyy-MM-dd HH:mm:ss";
         public static final String SIMPLE_DATE_FORMAT_MILLIS = "yyyy-MM-dd HH:mm:ss.SSS";
+        public static final String SIMPLE_DATE_FORMAT_NANOSECOND = "yyyy-MM-dd HH:mm:ss.SSSSSSSSS";
         /**
          *  2020-06-09T09:00:00.000+08:00
          */
         public static final String SIMPLE_DATE_FORMAT_WITH_TIMEZONE = "yyyy-MM-dd'T'HH:mm:ss.SSSZZZ";
+        public static final String SIMPLE_DATE_FORMAT_WITH_TIMEZONE_DATETIME = "yyyy-MM-dd'T'HH:mm:ss.SSSZZ";
         /**
          * yyyy-MM-dd
          */
@@ -324,6 +594,18 @@ public final class JacksonSerializer implements SerializeUtils.StringSerializabl
          */
         public static final String SHORT_TIME_FORMAT = "HH:mm:ss";
         public static final String SHORT_TIME_FORMAT_MILLISECOND = "HH:mm:ss.SSS";
+        public static final String SHORT_TIME_FORMAT_NANOSECOND = "HH:mm:ss.SSSSSSSSS";
+
+        public static String localDateTimeFormat = SIMPLE_DATE_FORMAT_MILLIS;
+
+        public static String localTimeFormat = SHORT_TIME_FORMAT_MILLISECOND;
+
+        static {
+            if (JdkUtils.isJdk11()) {
+                localDateTimeFormat = SIMPLE_DATE_FORMAT_NANOSECOND;
+                localTimeFormat = SHORT_TIME_FORMAT_NANOSECOND;
+            }
+        }
     }
 
 
@@ -464,4 +746,19 @@ public final class JacksonSerializer implements SerializeUtils.StringSerializabl
         }
     }
 
+    private static class CustomTypeResolverBuilder extends DefaultTypeResolverBuilder {
+
+        public CustomTypeResolverBuilder() {
+            super(DefaultTyping.NON_FINAL, LaissezFaireSubTypeValidator.instance);
+        }
+
+        /**
+         * @return true will serialize with runtime type info
+         */
+        @Override
+        public boolean useForType(JavaType type) {
+            return type.getRawClass().isInterface() &&
+                    StringUtil.startWith(type.getRawClass().getName(), FastUtilAdapterFactory.FASTUTIL_PACKAGE);
+        }
+    }
 }

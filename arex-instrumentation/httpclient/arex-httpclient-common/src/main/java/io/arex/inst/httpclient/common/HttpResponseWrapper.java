@@ -1,28 +1,13 @@
 package io.arex.inst.httpclient.common;
 
-import com.fasterxml.jackson.annotation.JsonAutoDetect;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
 import java.util.List;
 
-@JsonAutoDetect(
-        getterVisibility = JsonAutoDetect.Visibility.NONE,
-        setterVisibility = JsonAutoDetect.Visibility.NONE,
-        isGetterVisibility = JsonAutoDetect.Visibility.NONE
-)
 public class HttpResponseWrapper {
 
-    @JsonProperty("statusLine")
     private String statusLine;
-    @JsonProperty("content")
     private byte[] content;
-    @JsonProperty("locale")
     private StringTuple locale;
-    @JsonProperty("headers")
     private List<StringTuple> headers;
-    @JsonProperty("exceptionWrapper")
-    private ExceptionWrapper exceptionWrapper;
-
     public void setHeaders(List<StringTuple> headers) {
         this.headers = headers;
     }
@@ -47,24 +32,14 @@ public class HttpResponseWrapper {
         return content;
     }
 
-    public ExceptionWrapper getException() {
-        return exceptionWrapper;
-    }
-
-    public void setException(ExceptionWrapper exception) {
-        this.exceptionWrapper = exception;
-    }
-
     public HttpResponseWrapper() {
     }
 
-    public HttpResponseWrapper(String statusLine, byte[] content, StringTuple locale, List<StringTuple> headers,
-                               ExceptionWrapper exception) {
+    public HttpResponseWrapper(String statusLine, byte[] content, StringTuple locale, List<StringTuple> headers) {
         this.statusLine = statusLine;
         this.content = content;
         this.locale = locale;
         this.headers = headers;
-        this.exceptionWrapper = exception;
     }
 
     public StringTuple getLocale() {
@@ -72,9 +47,7 @@ public class HttpResponseWrapper {
     }
 
     public static class StringTuple {
-        @JsonProperty("f")
         private final String f;
-        @JsonProperty("s")
         private final String s;
 
         public StringTuple() {
@@ -93,11 +66,19 @@ public class HttpResponseWrapper {
         public String value() {
             return s;
         }
-    }
 
-    public static HttpResponseWrapper of(ExceptionWrapper exception) {
-        HttpResponseWrapper wrapper = new HttpResponseWrapper();
-        wrapper.exceptionWrapper = exception;
-        return wrapper;
+        /**
+         * Just for serialization
+         */
+        public String getF() {
+            return f;
+        }
+
+        /**
+         * Just for serialization
+         */
+        public String getS() {
+            return s;
+        }
     }
 }

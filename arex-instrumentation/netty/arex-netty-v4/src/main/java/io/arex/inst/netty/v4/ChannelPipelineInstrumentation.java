@@ -1,9 +1,8 @@
 package io.arex.inst.netty.v4;
 
-import io.arex.foundation.api.MethodInstrumentation;
-import io.arex.foundation.api.ModuleDescription;
-import io.arex.foundation.api.TypeInstrumentation;
-import io.arex.foundation.internal.CallDepth;
+import io.arex.agent.bootstrap.internal.CallDepth;
+import io.arex.inst.extension.MethodInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
 import io.arex.inst.netty.v4.server.RequestTracingHandler;
 import io.arex.inst.netty.v4.server.ResponseTracingHandler;
 import io.arex.inst.netty.v4.server.ServerCodecTracingHandler;
@@ -21,9 +20,6 @@ import static java.util.Collections.singletonList;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 public class ChannelPipelineInstrumentation extends TypeInstrumentation {
-    public ChannelPipelineInstrumentation(ModuleDescription module) {
-        super(module);
-    }
 
     @Override
     protected ElementMatcher<TypeDescription> typeMatcher() {
@@ -41,7 +37,7 @@ public class ChannelPipelineInstrumentation extends TypeInstrumentation {
 
     public static final class AddHandlerAdvice {
 
-        @Advice.OnMethodEnter
+        @Advice.OnMethodEnter(suppress = Throwable.class)
         public static void onEnter(@Advice.Argument(2) ChannelHandler handler,
                                    @Advice.Local("callDepth") CallDepth callDepth) {
             callDepth = CallDepth.forClass(handler.getClass());

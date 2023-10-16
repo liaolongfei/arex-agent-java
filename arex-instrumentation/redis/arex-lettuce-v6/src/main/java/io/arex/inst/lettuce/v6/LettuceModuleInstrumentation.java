@@ -1,9 +1,10 @@
 package io.arex.inst.lettuce.v6;
 
 import com.google.auto.service.AutoService;
-import io.arex.foundation.api.ModuleDescription;
-import io.arex.foundation.api.ModuleInstrumentation;
-import io.arex.foundation.api.TypeInstrumentation;
+import io.arex.inst.extension.ModuleDescription;
+import io.arex.inst.extension.ModuleInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
+import io.arex.agent.bootstrap.model.ComparableVersion;
 
 import java.util.Arrays;
 import java.util.List;
@@ -15,8 +16,7 @@ import java.util.List;
 public class LettuceModuleInstrumentation extends ModuleInstrumentation {
     public LettuceModuleInstrumentation() {
         super("lettuce-v6", ModuleDescription.builder()
-            .addPackage("lettuce.core", "5")
-            .addPackage("lettuce.core", "6").build());
+                .name("lettuce.core").supportFrom(ComparableVersion.of("6.0")).build());
     }
 
     @Override

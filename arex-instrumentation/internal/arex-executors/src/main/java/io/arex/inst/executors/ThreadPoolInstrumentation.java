@@ -1,9 +1,9 @@
 package io.arex.inst.executors;
 
-import io.arex.foundation.api.MethodInstrumentation;
-import io.arex.foundation.api.TypeInstrumentation;
 import io.arex.agent.bootstrap.ctx.CallableWrapper;
 import io.arex.agent.bootstrap.ctx.RunnableWrapper;
+import io.arex.inst.extension.MethodInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
@@ -58,6 +58,7 @@ public class ThreadPoolInstrumentation extends TypeInstrumentation {
                 "org.eclipse.jetty.util.thread.ReservedThreadExecutor",
                 "com.google.common.util.concurrent.AbstractListeningExecutorService",
                 "com.google.common.util.concurrent.MoreExecutors$ListeningDecorator",
+                "com.google.common.util.concurrent.AbstractFuture",
                 "io.netty.channel.epoll.EpollEventLoop",
                 "io.netty.channel.epoll.EpollEventLoopGroup",
                 "io.netty.channel.MultithreadEventLoopGroup",

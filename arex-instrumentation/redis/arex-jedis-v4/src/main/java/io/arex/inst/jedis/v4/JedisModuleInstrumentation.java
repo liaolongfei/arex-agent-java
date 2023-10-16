@@ -1,9 +1,10 @@
 package io.arex.inst.jedis.v4;
 
 import com.google.auto.service.AutoService;
-import io.arex.foundation.api.ModuleDescription;
-import io.arex.foundation.api.ModuleInstrumentation;
-import io.arex.foundation.api.TypeInstrumentation;
+import io.arex.inst.extension.ModuleDescription;
+import io.arex.inst.extension.ModuleInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
+import io.arex.agent.bootstrap.model.ComparableVersion;
 
 import java.util.List;
 
@@ -13,12 +14,11 @@ import static java.util.Collections.singletonList;
 public class JedisModuleInstrumentation extends ModuleInstrumentation {
     public JedisModuleInstrumentation() {
         super("jedis-v4", ModuleDescription.builder()
-                .addPackage("Jedis", "4")
-                .build());
+                .name("Jedis").supportFrom(ComparableVersion.of("4.0")).build());
     }
 
     @Override
     public List<TypeInstrumentation> instrumentationTypes() {
-        return singletonList(new JedisFactoryInstrumentation(target));
+        return singletonList(new JedisFactoryInstrumentation());
     }
 }

@@ -1,13 +1,9 @@
 package io.arex.inst.httpservlet.inst;
 
-import io.arex.foundation.api.MethodInstrumentation;
-import io.arex.foundation.api.ModuleDescription;
-import io.arex.foundation.api.TypeInstrumentation;
+import io.arex.inst.extension.MethodInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
 import io.arex.inst.httpservlet.ServletAdviceHelper;
-import io.arex.inst.httpservlet.adapter.ServletAdapter;
 import io.arex.inst.httpservlet.adapter.impl.ServletAdapterImplV5;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.type.TypeDescription;
@@ -28,9 +24,6 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
  * @date 2022/03/10
  */
 public class InvocableHandlerInstrumentationV5 extends TypeInstrumentation {
-    public InvocableHandlerInstrumentationV5(ModuleDescription module) {
-        super(module);
-    }
 
     @Override
     public ElementMatcher<TypeDescription> typeMatcher() {
@@ -44,18 +37,16 @@ public class InvocableHandlerInstrumentationV5 extends TypeInstrumentation {
             .and(takesArgument(1, named("org.springframework.web.method.support.ModelAndViewContainer")));
 
         String adviceClassName = this.getClass().getName() + "$InvokeAdvice";
-
         return Collections.singletonList(new MethodInstrumentation(matcher, adviceClassName));
     }
 
     public static class InvokeAdvice {
-        public static final ServletAdapter<HttpServletRequest, HttpServletResponse> ADAPTER =
-            ServletAdapterImplV5.getInstance();
 
-        @Advice.OnMethodExit
+        @Advice.OnMethodExit(suppress = Throwable.class)
         public static void onExit(@Advice.Argument(0) NativeWebRequest nativeWebRequest,
             @Advice.This InvocableHandlerMethod invocableHandlerMethod, @Advice.Return Object response) {
-            ServletAdviceHelper.onInvokeForRequestExit(ADAPTER, nativeWebRequest, invocableHandlerMethod, response);
+            ServletAdviceHelper.onInvokeForRequestExit(ServletAdapterImplV5.getInstance(),
+                    nativeWebRequest, invocableHandlerMethod, response);
         }
     }
 }

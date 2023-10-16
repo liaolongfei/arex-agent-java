@@ -1,9 +1,10 @@
 package io.arex.inst.redisson.v3;
 
 import com.google.auto.service.AutoService;
-import io.arex.foundation.api.ModuleDescription;
-import io.arex.foundation.api.ModuleInstrumentation;
-import io.arex.foundation.api.TypeInstrumentation;
+import io.arex.inst.extension.ModuleDescription;
+import io.arex.inst.extension.ModuleInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
+import io.arex.agent.bootstrap.model.ComparableVersion;
 
 import java.util.Arrays;
 import java.util.List;
@@ -15,11 +16,11 @@ import java.util.List;
 public class RedissonModuleInstrumentation extends ModuleInstrumentation {
     public RedissonModuleInstrumentation() {
         super("redisson-v3", ModuleDescription.builder()
-            .addPackage("Redisson", "3").build());
+                .name("Redisson").supportFrom(ComparableVersion.of("3.0")).build());
     }
 
     @Override
     public List<TypeInstrumentation> instrumentationTypes() {
-        return Arrays.asList(new RedissonInstrumentation(target));
+        return Arrays.asList(new RedissonInstrumentation());
     }
 }

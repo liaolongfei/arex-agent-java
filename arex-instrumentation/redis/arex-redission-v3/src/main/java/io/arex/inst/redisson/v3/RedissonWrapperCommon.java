@@ -1,7 +1,8 @@
 package io.arex.inst.redisson.v3;
 
 import io.arex.agent.bootstrap.ctx.TraceTransmitter;
-import io.arex.foundation.context.ContextManager;
+import io.arex.agent.bootstrap.model.MockResult;
+import io.arex.inst.runtime.context.ContextManager;
 import io.arex.inst.redis.common.RedisExtractor;
 import org.redisson.api.RFuture;
 import org.redisson.misc.CompletableFutureWrapper;
@@ -13,16 +14,21 @@ import java.util.concurrent.Callable;
  */
 public class RedissonWrapperCommon {
     public static <R> RFuture<R> delegateCall(String redisUri, String cmd, String key,
-        Callable<RFuture<R>> resultFuture) {
+                                              Callable<RFuture<R>> resultFuture) {
         return delegateCall(redisUri, cmd, key, null, resultFuture);
     }
 
     public static <R> RFuture<R> delegateCall(String redisUri, String cmd, String key, String field,
-        Callable<RFuture<R>> futureCallable) {
+                                              Callable<RFuture<R>> futureCallable) {
         if (ContextManager.needReplay()) {
             RedisExtractor extractor = new RedisExtractor(redisUri, cmd, key, field);
-            R replayResult = (R) extractor.replay();
-            return new CompletableFutureWrapper<R>(replayResult);
+            MockResult mockResult = extractor.replay();
+            if (mockResult.notIgnoreMockResult()) {
+                if (mockResult.getThrowable() != null) {
+                    return new CompletableFutureWrapper<>(mockResult.getThrowable());
+                }
+                return new CompletableFutureWrapper<>((R) mockResult.getResult());
+            }
         }
 
         RFuture<R> resultFuture = null;

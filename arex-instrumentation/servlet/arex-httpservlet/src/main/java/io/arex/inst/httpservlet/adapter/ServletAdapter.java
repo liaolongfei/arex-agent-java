@@ -11,11 +11,6 @@ import java.util.Enumeration;
  * ServletAdapter
  */
 public interface ServletAdapter<HttpServletRequest, HttpServletResponse> {
-    @Nullable
-    HttpServletRequest asHttpServletRequest(Object servletRequest);
-
-    @Nullable
-    HttpServletResponse asHttpServletResponse(Object servletResponse);
 
     @Nullable
     HttpServletRequest getNativeRequest(NativeWebRequest nativeWebRequest);
@@ -49,7 +44,13 @@ public interface ServletAdapter<HttpServletRequest, HttpServletResponse> {
 
     String getContentType(HttpServletRequest httpServletRequest);
 
-    String getServletPath(HttpServletRequest httpServletRequest);
+    String getFullUrl(HttpServletRequest httpServletRequest);
+
+    String getRequestPath(HttpServletRequest httpServletRequest);
+
+    String getRequestURI(HttpServletRequest httpServletRequest);
+
+    String getPattern(HttpServletRequest httpServletRequest);
 
     String getMethod(HttpServletRequest httpServletRequest);
 
@@ -57,9 +58,15 @@ public interface ServletAdapter<HttpServletRequest, HttpServletResponse> {
 
     Collection<String> getResponseHeaderNames(HttpServletResponse httpServletResponse);
 
-    String getQueryString(HttpServletRequest httpServletRequest);
-
     byte[] getRequestBytes(HttpServletRequest httpServletRequest);
 
     byte[] getResponseBytes(HttpServletResponse httpServletResponse);
+
+    HttpServletRequest asHttpServletRequest(Object servletRequest);
+
+    HttpServletResponse asHttpServletResponse(Object servletResponse);
+
+    boolean markProcessed(HttpServletRequest httpServletRequest, String mark);
+
+    String getParameter(HttpServletRequest httpServletRequest, String name);
 }

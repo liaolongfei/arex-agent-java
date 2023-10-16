@@ -1,7 +1,9 @@
 package io.arex.inst.lettuce.v6;
 
 import io.arex.agent.bootstrap.ctx.TraceTransmitter;
-import io.arex.foundation.context.ContextManager;
+import io.arex.agent.bootstrap.model.MockResult;
+import io.arex.inst.redis.common.RedisConnectionManager;
+import io.arex.inst.runtime.context.ContextManager;
 import io.arex.inst.redis.common.RedisExtractor;
 import io.arex.inst.redis.common.RedisKeyUtil;
 import io.lettuce.core.GetExArgs;
@@ -420,6 +422,18 @@ public class RedisAsyncCommandsImplWrapper<K, V> extends RedisAsyncCommandsImpl<
     }
 
     @Override
+    public RedisFuture<String> rename(K key, K newKey) {
+        Command<K, V, String> cmd = commandBuilder.rename(key, newKey);
+        return dispatch(cmd, RedisKeyUtil.generate(key, newKey));
+    }
+
+    @Override
+    public RedisFuture<Boolean> renamenx(K key, K newKey) {
+        Command<K, V, Boolean> cmd = commandBuilder.renamenx(key, newKey);
+        return dispatch(cmd, RedisKeyUtil.generate(key, newKey));
+    }
+
+    @Override
     public RedisFuture<V> rpop(K key) {
         Command<K, V, V> cmd = commandBuilder.rpop(key);
         return dispatch(cmd, String.valueOf(key));
@@ -581,14 +595,20 @@ public class RedisAsyncCommandsImplWrapper<K, V> extends RedisAsyncCommandsImpl<
 
     private <T> AsyncCommand<K, V, T> dispatch(RedisCommand<K, V, T> cmd, String key, String field) {
         if (redisUri == null) {
-            redisUri = LettuceHelper.getRedisUri(this.getStatefulConnection().hashCode());
+            redisUri = RedisConnectionManager.getRedisUri(this.getStatefulConnection().hashCode());
         }
         if (ContextManager.needReplay()) {
             AsyncCommand<K, V, T> asyncCommand = new AsyncCommand<>(cmd);
             RedisExtractor extractor = new RedisExtractor(this.redisUri, cmd.getType().name(), key, field);
-            T replayResult = (T) extractor.replay();
-            asyncCommand.complete(replayResult);
-            return asyncCommand;
+            MockResult mockResult = extractor.replay();
+            if (mockResult.notIgnoreMockResult()) {
+                if (mockResult.getThrowable() != null) {
+                    asyncCommand.completeExceptionally(mockResult.getThrowable());
+                } else {
+                    asyncCommand.complete((T) mockResult.getResult());
+                }
+                return asyncCommand;
+            }
         }
 
         AsyncCommand<K, V, T> resultFuture = super.dispatch(cmd);

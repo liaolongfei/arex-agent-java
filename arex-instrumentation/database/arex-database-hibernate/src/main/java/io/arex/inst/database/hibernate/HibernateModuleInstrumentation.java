@@ -1,9 +1,10 @@
 package io.arex.inst.database.hibernate;
 
-import io.arex.foundation.api.ModuleDescription;
-import io.arex.foundation.api.ModuleInstrumentation;
-import io.arex.foundation.api.TypeInstrumentation;
 import com.google.auto.service.AutoService;
+import io.arex.inst.extension.ModuleDescription;
+import io.arex.inst.extension.ModuleInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
+import io.arex.agent.bootstrap.model.ComparableVersion;
 
 import java.util.List;
 
@@ -13,14 +14,13 @@ import static java.util.Arrays.asList;
 public class HibernateModuleInstrumentation extends ModuleInstrumentation {
     public HibernateModuleInstrumentation() {
         super("hibernate-v5", ModuleDescription.builder()
-                .addPackage("hibernate-core", "5")
-                .build());
+                .name("hibernate-core").supportFrom(ComparableVersion.of("5.0")).build());
     }
 
     @Override
     public List<TypeInstrumentation> instrumentationTypes() {
-        return asList(new LoaderInstrumentation(target),
-                new AbstractProducedQueryInstrumentation(target),
-                new AbstractEntityPersisterInstrumentation(target));
+        return asList(new LoaderInstrumentation(),
+                new AbstractProducedQueryInstrumentation(),
+                new AbstractEntityPersisterInstrumentation());
     }
 }

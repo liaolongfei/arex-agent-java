@@ -1,14 +1,20 @@
 package io.arex.inst.httpclient.common;
 
-import io.arex.foundation.model.HttpClientMocker;
-import io.arex.foundation.serializer.SerializeUtils;
+import io.arex.agent.bootstrap.model.MockResult;
+import io.arex.agent.bootstrap.model.Mocker;
+import io.arex.inst.runtime.serializer.Serializer;
+import io.arex.inst.runtime.util.IgnoreUtils;
+import io.arex.inst.runtime.util.MockUtils;
+import io.arex.inst.runtime.util.TypeUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
+import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class HttpClientExtractor<TRequest, TResponse> {
     private static final Logger LOGGER = LoggerFactory.getLogger(HttpClientExtractor.class);
@@ -19,20 +25,6 @@ public class HttpClientExtractor<TRequest, TResponse> {
         this.adapter = adapter;
     }
 
-    public void record(HttpResponseWrapper wrapped) {
-        if (wrapped == null) {
-            return;
-        }
-        try {
-            String response = SerializeUtils.serialize(wrapped);
-            HttpClientMocker mocker = this.makeMocker();
-            mocker.setResponse(response);
-            mocker.record();
-        } catch (Throwable throwable) {
-            LOGGER.warn("record error:{}", throwable.getMessage(), throwable);
-        }
-    }
-
     public void record(TResponse response) {
         HttpResponseWrapper wrapped = null;
         try {
@@ -40,43 +32,49 @@ public class HttpClientExtractor<TRequest, TResponse> {
         } catch (Throwable throwable) {
             LOGGER.warn("wrap record error:{}", throwable.getMessage(), throwable);
         }
-        this.record(wrapped);
-    }
 
-    public void record(Exception exception) {
-        HttpResponseWrapper wrapped = HttpResponseWrapper.of(new ExceptionWrapper(exception));
-        this.record(wrapped);
-    }
-
-    public TResponse replay() {
-        return this.replay(fetchMockResult());
-    }
-
-    public TResponse replay(HttpResponseWrapper wrapped) {
         if (wrapped == null) {
-            throw new ArexDataException("The wrapped == null");
+            return;
         }
-        ExceptionWrapper exception = wrapped.getException();
-        if (exception != null) {
-            throw new ArexDataException(exception.getOriginalException());
-        }
-        return this.adapter.unwrap(wrapped);
+
+        Mocker mocker = makeMocker();
+        mocker.getTargetResponse().setType(HttpResponseWrapper.class.getName());
+        mocker.getTargetResponse().setBody(Serializer.serialize(wrapped));
+        MockUtils.recordMocker(mocker);
     }
 
-    private HttpClientMocker makeMocker() {
-        HttpClientMocker mocker = new HttpClientMocker();
+    public void record(Throwable throwable) {
+        Mocker mocker = makeMocker();
+        mocker.getTargetResponse().setType(TypeUtil.getName(throwable));
+        mocker.getTargetResponse().setBody(Serializer.serialize(throwable));
+        MockUtils.recordMocker(mocker);
+    }
+
+    public MockResult replay() {
+        boolean ignoreResult = IgnoreUtils.ignoreMockResult("http", adapter.getUri().getPath());
+        Object object = MockUtils.replayBody(makeMocker());
+        if (object instanceof Throwable) {
+            return MockResult.success(ignoreResult, object);
+        }
+        if (object instanceof HttpResponseWrapper) {
+            TResponse response = this.adapter.unwrap((HttpResponseWrapper) object);
+            return MockResult.success(ignoreResult, response);
+        }
+        return null;
+    }
+
+    private Mocker makeMocker() {
         String httpMethod = adapter.getMethod();
-        mocker.setMethod(httpMethod);
-        mocker.setUrl(adapter.getUri().toString());
-        mocker.setContentType(adapter.getRequestContentType());
-        mocker.setRequest(this.encodeRequest(httpMethod));
-        mocker.setResponseType(HttpResponseWrapper.class.getName());
-        return mocker;
-    }
+        Mocker mocker = MockUtils.createHttpClient(adapter.getUri().getPath());
+        Map<String, Object> attributes = new HashMap<>();
 
-    public HttpResponseWrapper fetchMockResult() {
-        HttpClientMocker mocker = makeMocker();
-        return (HttpResponseWrapper) mocker.replay();
+        mocker.getTargetRequest().setAttributes(attributes);
+        attributes.put("HttpMethod", httpMethod);
+        attributes.put("QueryString", adapter.getUri().getQuery());
+        attributes.put("ContentType", adapter.getRequestContentType());
+
+        mocker.getTargetRequest().setBody(this.encodeRequest(httpMethod));
+        return mocker;
     }
 
     private String encodeRequest(String httpMethod) {
@@ -89,10 +87,10 @@ public class HttpClientExtractor<TRequest, TResponse> {
         return adapter.getUri().getQuery();
     }
 
-    private final static Set<String> ALLOW_HTTP_METHOD_BODY_SETS;
+    private static final List<String> ALLOW_HTTP_METHOD_BODY_SETS;
 
     static {
-        ALLOW_HTTP_METHOD_BODY_SETS = new HashSet<>();
+        ALLOW_HTTP_METHOD_BODY_SETS = new ArrayList<>(4);
         ALLOW_HTTP_METHOD_BODY_SETS.add("POST");
         ALLOW_HTTP_METHOD_BODY_SETS.add("PUT");
         ALLOW_HTTP_METHOD_BODY_SETS.add("PATCH");

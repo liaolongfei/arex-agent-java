@@ -1,62 +1,124 @@
 package io.arex.inst.httpservlet;
 
-import io.arex.foundation.config.ConfigManager;
-import io.arex.foundation.context.ContextManager;
-import io.arex.foundation.healthy.HealthManager;
-import io.arex.foundation.internal.Pair;
-import io.arex.foundation.listener.CaseEvent;
-import io.arex.foundation.listener.CaseListenerImpl;
-import io.arex.foundation.model.Constants;
-import io.arex.foundation.util.LogUtil;
-import io.arex.foundation.util.StringUtil;
+import io.arex.agent.bootstrap.TraceContextManager;
+import io.arex.agent.bootstrap.constants.ConfigConstants;
+import io.arex.agent.bootstrap.internal.Pair;
+import io.arex.agent.bootstrap.model.MockCategoryType;
+import io.arex.agent.bootstrap.util.StringUtil;
 import io.arex.inst.httpservlet.adapter.ServletAdapter;
-import org.apache.http.HttpStatus;
-import org.springframework.web.bind.annotation.ResponseBody;
-import org.springframework.web.context.request.NativeWebRequest;
-import org.springframework.web.context.request.async.DeferredResult;
-import org.springframework.web.method.support.InvocableHandlerMethod;
-
+import io.arex.inst.runtime.config.Config;
+import io.arex.inst.runtime.context.ArexContext;
+import io.arex.inst.runtime.context.ContextManager;
+import io.arex.inst.runtime.request.RequestHandlerManager;
+import io.arex.inst.runtime.listener.CaseEvent;
+import io.arex.inst.runtime.listener.CaseEventDispatcher;
+import io.arex.inst.runtime.listener.EventSource;
+import io.arex.inst.runtime.model.ArexConstants;
+import io.arex.inst.runtime.util.IgnoreUtils;
+import io.arex.inst.runtime.log.LogManager;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.context.request.NativeWebRequest;
+import org.springframework.web.context.request.async.DeferredResult;
+import org.springframework.web.method.support.InvocableHandlerMethod;
 
 /**
  * ServletAdviceHelper
  */
 public class ServletAdviceHelper {
+    public static final String SERVLET_ASYNC_FLAG = "arex-async-flag";
+    public static final String SERVLET_RESPONSE = "arex-servlet-response";
     private static final Set<String> FILTERED_CONTENT_TYPE = new HashSet<>();
+    private static final Set<String> FILTERED_GET_URL_SUFFIX = new HashSet<>();
+    public static final String PROCESSED_FLAG = "arex-processed-flag";
 
     static {
         FILTERED_CONTENT_TYPE.add("/javascript");
         FILTERED_CONTENT_TYPE.add("image/");
         FILTERED_CONTENT_TYPE.add("/font");
         FILTERED_CONTENT_TYPE.add("/pdf");
-        FILTERED_CONTENT_TYPE.add(".css");
+        FILTERED_CONTENT_TYPE.add("/css");
+
+        FILTERED_GET_URL_SUFFIX.add(".js");
+        FILTERED_GET_URL_SUFFIX.add(".css");
+        FILTERED_GET_URL_SUFFIX.add(".png");
+        FILTERED_GET_URL_SUFFIX.add(".woff");
+        FILTERED_GET_URL_SUFFIX.add(".pdf");
+        FILTERED_GET_URL_SUFFIX.add(".map");
+        FILTERED_GET_URL_SUFFIX.add(".ico");
     }
 
+    /**
+     * If there is an implementation of Filter, it is called by XXXFilter.
+     * If there is no implementation of Filter, it is called by Servlet.service
+     * <pre>
+     * JavaWeb process:
+     *                             filter1                      filter2
+     *                       ----------------------       ----------------------
+     *  ----------           |    ----------      |       |    ----------      |
+     *  | client |--request--|--> | before |      |   ┎---|--> | before |      |
+     *  ----------           |    ----------      |   ¦   |    ----------      |
+     *       ↑               |         ↓          |   ¦   |         ↓          |
+     *       ¦               |  ----------------  |   ¦   |  ----------------  |    -------------------
+     *       ¦               |  |Chain.doFilter|--|---┘   |  |Chain.doFilter| -|--->| Servlet.service |
+     *       ¦               |  ----------------  |       |  ----------------  |    -------------------
+     *       ¦               |                    |       |                    |             ¦
+     *       ¦               |    ----------      |       |    ----------      |             ¦
+     *       ------response--|----| after  | <----|-------|----| after  | <----|-------------┘
+     *                       |    ----------      |       |    ----------      |
+     *                       ----------------------       ----------------------
+     * </pre>
+     */
     public static <TRequest, TResponse> Pair<TRequest, TResponse> onServiceEnter(
             ServletAdapter<TRequest, TResponse> adapter, Object servletRequest,
             Object servletResponse) {
         TRequest httpServletRequest = adapter.asHttpServletRequest(servletRequest);
-        if (shouldSkip(adapter, httpServletRequest)) {
+        if (httpServletRequest == null) {
             return null;
         }
 
-        String caseId = adapter.getRequestHeader(httpServletRequest, Constants.RECORD_ID);
-        // check record rate limit
-        if (StringUtil.isEmpty(caseId) && !checkRateLimit(adapter.getServletPath(httpServletRequest))) {
+        // This judgment prevents multiple calls (although there are multiple calls in a request, only one pass is allowed)
+        if (adapter.markProcessed(httpServletRequest, PROCESSED_FLAG)) {
             return null;
         }
+
         TResponse httpServletResponse = adapter.asHttpServletResponse(servletResponse);
+        if (httpServletResponse == null) {
+            return null;
+        }
 
         // Async listener will handle if attr with arex-async-flag
-        if ("true".equals(adapter.getAttribute(httpServletRequest, ServletConstants.SERVLET_ASYNC_FLAG))) {
-            httpServletResponse = adapter.wrapResponse(httpServletResponse);
-            return Pair.of(null, httpServletResponse);
+        if (Boolean.TRUE.equals(adapter.getAttribute(httpServletRequest, SERVLET_ASYNC_FLAG))) {
+            return null;
         }
 
-        CaseListenerImpl.INSTANCE.onEvent(new CaseEvent(StringUtil.isEmpty(caseId) ? StringUtil.EMPTY : caseId, CaseEvent.Action.CREATE));
+        if (shouldSkip(adapter, httpServletRequest)) {
+            CaseEventDispatcher.onEvent(CaseEvent.ofEnterEvent());
+            return null;
+        }
+
+        RequestHandlerManager.preHandle(httpServletRequest, MockCategoryType.SERVLET.getName());
+        // skip servlet if attr with arex-skip-flag
+        if (Boolean.TRUE.equals(adapter.getAttribute(httpServletRequest, ArexConstants.SKIP_FLAG))) {
+            return null;
+        }
+
+        // 302 Redirect request
+        String redirectRecordId = getRedirectRecordId(adapter, httpServletRequest);
+        if (StringUtil.isNotEmpty(redirectRecordId)) {
+            TraceContextManager.set(redirectRecordId);
+        } else {
+            CaseEventDispatcher.onEvent(CaseEvent.ofEnterEvent());
+            String caseId = adapter.getRequestHeader(httpServletRequest, ArexConstants.RECORD_ID);
+            String excludeMockTemplate = adapter.getRequestHeader(httpServletRequest, ArexConstants.HEADER_EXCLUDE_MOCK);
+            CaseEventDispatcher.onEvent(CaseEvent.ofCreateEvent(EventSource.of(caseId, excludeMockTemplate)));
+
+        }
+
         if (ContextManager.needRecordOrReplay()) {
             httpServletRequest = adapter.wrapRequest(httpServletRequest);
             httpServletResponse = adapter.wrapResponse(httpServletResponse);
@@ -66,37 +128,39 @@ public class ServletAdviceHelper {
         return null;
     }
 
-
     public static <TRequest, TResponse> void onServiceExit(
             ServletAdapter<TRequest, TResponse> adapter, Object servletRequest,
             Object servletResponse) {
         try {
-            if (!ContextManager.needRecordOrReplay()) {
+            TRequest httpServletRequest = adapter.asHttpServletRequest(servletRequest);
+            TResponse httpServletResponse = adapter.asHttpServletResponse(servletResponse);
+
+            RequestHandlerManager.postHandle(httpServletRequest, httpServletResponse, MockCategoryType.SERVLET.getName());
+
+            if (httpServletRequest == null || httpServletResponse == null) {
                 return;
             }
 
-            TRequest httpServletRequest = adapter.asHttpServletRequest(servletRequest);
-            TResponse httpServletResponse = adapter.asHttpServletResponse(servletResponse);
+            adapter.removeAttribute(httpServletRequest, PROCESSED_FLAG);
 
             if (!adapter.wrapped(httpServletRequest, httpServletResponse)) {
                 return;
             }
 
-            if (HttpStatus.SC_OK != adapter.getStatus(httpServletResponse)) {
+            // Do not record if arex trace was removed
+            if (!ContextManager.needRecordOrReplay()) {
                 adapter.copyBodyToResponse(httpServletResponse);
                 return;
             }
 
             // Async listener will handle async request
-            if ("true".equals(adapter.getAttribute(httpServletRequest, ServletConstants.SERVLET_ASYNC_FLAG))) {
-                adapter.removeAttribute(httpServletRequest, ServletConstants.SERVLET_ASYNC_FLAG);
-                adapter.copyBodyToResponse(httpServletResponse);
+            if (Boolean.TRUE.equals(adapter.getAttribute(httpServletRequest, SERVLET_ASYNC_FLAG))) {
                 return;
             }
 
             // Add async listener for async request
             if (adapter.isAsyncStarted(httpServletRequest)) {
-                adapter.setAttribute(httpServletRequest, ServletConstants.SERVLET_ASYNC_FLAG, "true");
+                adapter.setAttribute(httpServletRequest, SERVLET_ASYNC_FLAG, Boolean.TRUE);
                 adapter.addListener(adapter, httpServletRequest, httpServletResponse);
                 return;
             }
@@ -104,18 +168,14 @@ public class ServletAdviceHelper {
             // sync request
             new ServletExtractor<>(adapter, httpServletRequest, httpServletResponse).execute();
         } catch (Throwable e) {
-            LogUtil.warn("servlet.onExit", e);
+            LogManager.warn("servlet.onExit", e);
         }
     }
 
     public static <TRequest, TResponse> void onInvokeForRequestExit(
             ServletAdapter<TRequest, TResponse> adapter, NativeWebRequest nativeWebRequest,
             InvocableHandlerMethod invocableHandlerMethod, Object response) {
-        if (response == null) {
-            return;
-        }
-
-        if (!ContextManager.needRecordOrReplay()) {
+        if (response == null || !ContextManager.needRecordOrReplay()) {
             return;
         }
 
@@ -126,40 +186,80 @@ public class ServletAdviceHelper {
         }
 
         // Set response only when return response body
-        if (!invocableHandlerMethod.getReturnType().hasMethodAnnotation(ResponseBody.class)) {
+        if (!invocableHandlerMethod.getReturnType().hasMethodAnnotation(ResponseBody.class) &&
+                !invocableHandlerMethod.getBeanType().isAnnotationPresent(RestController.class)) {
             return;
         }
 
         TRequest httpServletRequest = adapter.getNativeRequest(nativeWebRequest);
-
         if (httpServletRequest == null) {
             return;
         }
 
-        adapter.setAttribute(httpServletRequest, ServletConstants.SERVLET_RESPONSE, response);
-    }
-
-    public static boolean checkRateLimit(String path) {
-        return ConfigManager.INSTANCE.isEnableDebug() ||
-                HealthManager.acquire(path, ConfigManager.INSTANCE.getRecordRate());
+        adapter.setAttribute(httpServletRequest, SERVLET_RESPONSE, response);
     }
 
     private static <TRequest> boolean shouldSkip(ServletAdapter<TRequest, ?> adapter,
                                                  TRequest httpServletRequest) {
-        // Do nothing if request header with arex-replay-warm-up
-        if (Boolean.parseBoolean(adapter.getRequestHeader(httpServletRequest, Constants.REPLAY_WARM_UP))) {
+        String caseId = adapter.getRequestHeader(httpServletRequest, ArexConstants.RECORD_ID);
+
+        // Replay scene
+        if (StringUtil.isNotEmpty(caseId)) {
+            return Config.get().getBoolean(ConfigConstants.DISABLE_REPLAY, false);
+        }
+
+        String forceRecord = adapter.getRequestHeader(httpServletRequest, ArexConstants.FORCE_RECORD);
+        // Do not skip if header with arex-force-record=true
+        if (Boolean.parseBoolean(forceRecord)) {
+            return false;
+        }
+
+        // Skip if request header with arex-replay-warm-up=true
+        if (Boolean.parseBoolean(adapter.getRequestHeader(httpServletRequest, ArexConstants.REPLAY_WARM_UP))) {
             return true;
         }
+
+        String requestURI = adapter.getRequestURI(httpServletRequest);
+        if (StringUtil.isEmpty(requestURI)) {
+            return false;
+        }
+
+        if (IgnoreUtils.excludeEntranceOperation(requestURI)) {
+            return true;
+        }
+
+        // Filter invalid servlet path suffix
+        if (FILTERED_GET_URL_SUFFIX.stream().anyMatch(requestURI::endsWith)) {
+            return true;
+        }
+
+        // Filter invalid content-type
         String contentType = adapter.getContentType(httpServletRequest);
-        return isFilteredContentType(contentType) ||
-                isCssPath(adapter.getServletPath(httpServletRequest));
+        if (StringUtil.isNotEmpty(contentType) && FILTERED_CONTENT_TYPE.stream().anyMatch(contentType::contains)) {
+            return true;
+        }
+
+        return Config.get().invalidRecord(requestURI);
     }
 
-    private static boolean isFilteredContentType(String contentType) {
-        return StringUtil.isEmpty(contentType) && FILTERED_CONTENT_TYPE.contains(contentType);
-    }
+    private static <TRequest, TResponse> String getRedirectRecordId(ServletAdapter<TRequest, TResponse> adapter,
+        TRequest httpServletRequest) {
+        String redirectRecordId = adapter.getParameter(httpServletRequest, ArexConstants.RECORD_ID);
+        if (StringUtil.isEmpty(redirectRecordId)) {
+            return null;
+        }
 
-    private static boolean isCssPath(String path) {
-        return StringUtil.isEmpty(path) || path.endsWith(".css");
+        String referer = adapter.getRequestHeader(httpServletRequest, "referer");
+
+        if (StringUtil.isEmpty(referer)) {
+            return null;
+        }
+
+        ArexContext context = ContextManager.getRecordContext(redirectRecordId);
+        if (context.isRedirectRequest(referer)) {
+            return redirectRecordId;
+        }
+
+        return null;
     }
 }

@@ -1,7 +1,7 @@
 package io.arex.inst.lettuce.v6;
 
-import io.arex.foundation.api.MethodInstrumentation;
-import io.arex.foundation.api.TypeInstrumentation;
+import io.arex.inst.extension.MethodInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
 import io.lettuce.core.RedisAsyncCommandsImpl;
 import io.lettuce.core.RedisReactiveCommandsImpl;
 import io.lettuce.core.StatefulRedisConnectionImpl;
@@ -12,7 +12,6 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 
 import static net.bytebuddy.matcher.ElementMatchers.isProtected;
@@ -31,23 +30,20 @@ public class StatefulRedisConnectionImplInstrumentation extends TypeInstrumentat
     public List<MethodInstrumentation> methodAdvices() {
         ElementMatcher<MethodDescription> asyncMatcher = isProtected().and(named("newRedisAsyncCommandsImpl"));
 
-        String asyncAdvice = this.getClass().getName() + "$NewRedisAsyncCommandsImplAdvice";
-
         ElementMatcher<MethodDescription> reactiveMatcher = isProtected().and(named("newRedisReactiveCommandsImpl"));
 
-        String reactiveAdvice = this.getClass().getName() + "$NewRedisReactiveCommandsImplAdvice";
-
-        return Arrays.asList(new MethodInstrumentation(asyncMatcher, asyncAdvice),
-            new MethodInstrumentation(reactiveMatcher, reactiveAdvice));
+        return Arrays.asList(
+            new MethodInstrumentation(asyncMatcher, NewRedisAsyncCommandsImplAdvice.class.getName()),
+            new MethodInstrumentation(reactiveMatcher, NewRedisReactiveCommandsImplAdvice.class.getName()));
     }
 
     public static class NewRedisAsyncCommandsImplAdvice {
-        @Advice.OnMethodEnter(skipOn = Advice.OnDefaultValue.class)
+        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
         public static boolean onEnter() {
-            return false;
+            return true;
         }
 
-        @Advice.OnMethodExit
+        @Advice.OnMethodExit(suppress = Throwable.class)
         public static <K, V> void onExit(@Advice.This StatefulRedisConnectionImpl<K, V> connection,
             @Advice.FieldValue("codec") RedisCodec<K, V> codec,
             @Advice.Return(readOnly = false) RedisAsyncCommandsImpl<K, V> returnValue) {
@@ -56,12 +52,12 @@ public class StatefulRedisConnectionImplInstrumentation extends TypeInstrumentat
     }
 
     public static class NewRedisReactiveCommandsImplAdvice {
-        @Advice.OnMethodEnter(skipOn = Advice.OnDefaultValue.class)
+        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
         public static boolean onEnter() {
-            return false;
+            return true;
         }
 
-        @Advice.OnMethodExit
+        @Advice.OnMethodExit(suppress = Throwable.class)
         public static <K, V> void onExit(@Advice.This StatefulRedisConnectionImpl<K, V> connection,
             @Advice.FieldValue("codec") RedisCodec<K, V> codec,
             @Advice.Return(readOnly = false) RedisReactiveCommandsImpl<K, V> returnValue) {

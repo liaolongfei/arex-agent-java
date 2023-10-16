@@ -1,20 +1,19 @@
 package io.arex.inst.database.hibernate;
 
-import io.arex.foundation.api.MethodInstrumentation;
-import io.arex.foundation.api.ModuleDescription;
-import io.arex.foundation.api.TypeInstrumentation;
-import io.arex.foundation.context.ArexContext;
-import io.arex.foundation.context.ContextManager;
+import io.arex.inst.runtime.context.ContextManager;
+import io.arex.inst.runtime.context.RepeatedCollectManager;
+import io.arex.agent.bootstrap.model.MockResult;
 import io.arex.inst.database.common.DatabaseExtractor;
+import io.arex.inst.database.common.DatabaseHelper;
+import io.arex.inst.extension.MethodInstrumentation;
+import io.arex.inst.extension.TypeInstrumentation;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.matcher.ElementMatcher;
 import org.hibernate.HibernateException;
 import org.hibernate.engine.spi.QueryParameters;
-import org.hibernate.engine.spi.SharedSessionContractImplementor;
 import org.hibernate.loader.Loader;
 
-import java.sql.SQLException;
 import java.util.List;
 
 import static java.util.Collections.singletonList;
@@ -22,9 +21,6 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
 import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 
 public class LoaderInstrumentation extends TypeInstrumentation {
-    public LoaderInstrumentation(ModuleDescription module) {
-        super(module);
-    }
 
     @Override
     public ElementMatcher<TypeDescription> typeMatcher() {
@@ -44,30 +40,48 @@ public class LoaderInstrumentation extends TypeInstrumentation {
 
     @SuppressWarnings("unused")
     public static class QueryAdvice {
-        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class)
-        public static boolean onEnter() {
-            return ContextManager.needReplay();
+        @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
+        public static boolean onEnter(@Advice.This Loader loader,
+                                      @Advice.Argument(1) QueryParameters queryParameters,
+                                      @Advice.Local("mockResult") MockResult mockResult,
+                                      @Advice.Local("extractor") DatabaseExtractor extractor) {
+            RepeatedCollectManager.enter();
+            if (ContextManager.needRecordOrReplay()) {
+                extractor = new DatabaseExtractor(loader.getSQLString(),
+                        DatabaseHelper.parseParameter(queryParameters), "query");
+                if (ContextManager.needReplay()) {
+                    mockResult = extractor.replay();
+                }
+            }
+            return mockResult != null && mockResult.notIgnoreMockResult();
         }
 
-        @Advice.OnMethodExit(onThrowable = Throwable.class)
+        @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
         public static void onExit(@Advice.This Loader loader,
-                                  @Advice.Argument(0) SharedSessionContractImplementor session,
                                   @Advice.Argument(1) QueryParameters queryParameters,
-                                  @Advice.Thrown HibernateException exception,
-                                  @Advice.Return(readOnly = false) List list) throws SQLException, HibernateException {
-            ArexContext context = ContextManager.currentContext();
-            if (context != null) {
-                DatabaseExtractor extractor = new DatabaseExtractor(loader.getSQLString(),
-                        session.getJdbcCoordinator().getLogicalConnection().getPhysicalConnection(), queryParameters);
-                if (context.isReplay() && list == null) {
-                    list = (List) extractor.replay();
+                                  @Advice.Thrown(readOnly = false) Throwable throwable,
+                                  @Advice.Return(readOnly = false) List<?> list,
+                                  @Advice.Local("mockResult") MockResult mockResult,
+                                  @Advice.Local("extractor") DatabaseExtractor extractor) throws HibernateException {
+            if (!RepeatedCollectManager.exitAndValidate()) {
+                return;
+            }
+
+            if (extractor != null) {
+                if (mockResult != null && mockResult.notIgnoreMockResult() && list == null) {
+                    if (mockResult.getThrowable() != null) {
+                        throwable = mockResult.getThrowable();
+                    } else {
+                        list = (List<?>) mockResult.getResult();
+                    }
                     return;
                 }
-
-                if (exception != null) {
-                    extractor.record(exception);
-                } else {
-                    extractor.record(list);
+                if (ContextManager.needRecord()) {
+                    if (throwable != null) {
+                        extractor.record(throwable);
+                    } else {
+                        extractor.record(list);
+                    }
                 }
             }
         }
